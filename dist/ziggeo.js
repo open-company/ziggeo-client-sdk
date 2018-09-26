@@ -1,5 +1,5 @@
 /*!
-ziggeo-client-sdk - v2.32.4 - 2018-08-09
+ziggeo-client-sdk - v2.32.4 - 2018-09-26
 Copyright (c) 
 Proprietary Software License.
 */
@@ -24965,7 +24965,7 @@ Scoped.binding('module', 'root:BetaJS.MediaComponents');
 Scoped.define("module:", function () {
 	return {
     "guid": "7a20804e-be62-4982-91c6-98eb096d2e70",
-    "version": "0.0.131"
+    "version": "0.0.132"
 };
 });
 
