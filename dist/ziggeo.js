@@ -1,5 +1,5 @@
 /*!
-ziggeo-client-sdk - v2.32.4 - 2018-07-14
+ziggeo-client-sdk - v2.32.4 - 2018-08-09
 Copyright (c) 
 Proprietary Software License.
 */
@@ -12804,6 +12804,21 @@ Scoped.define("module:Dom", ["base:Types","base:Objs","module:Info","base:Async"
         "th": ["table", "thead", "tr"]
     };
 
+    var INTERACTION_EVENTS = ["click", "mousedown", "mouseup", "touchstart", "touchend", "keydown", "keyup", "keypress"];
+
+    var userInteractionCallbackList = [];
+    var userInteractionCallbackWaiting = false;
+    var userInteractionCallbackFunc = function() {
+        userInteractionCallbackList.forEach(function(entry) {
+            entry.callback.call(entry.context || this);
+        });
+        userInteractionCallbackList = [];
+        userInteractionCallbackWaiting = false;
+        INTERACTION_EVENTS.forEach(function(event) {
+            document.body.removeEventListener(event, userInteractionCallbackFunc);
+        });
+    };
+
     return {
 
         ready: function(callback, context) {
@@ -12828,6 +12843,19 @@ Scoped.define("module:Dom", ["base:Types","base:Objs","module:Info","base:Async"
                     if (document.readyState === "complete" || (document.readyState !== "loading" && !document.documentElement.doScroll))
                         completed();
                 }, 10);
+            }
+        },
+
+        userInteraction: function(callback, context) {
+            userInteractionCallbackList.push({
+                callback: callback,
+                context: context
+            });
+            if (!userInteractionCallbackWaiting) {
+                userInteractionCallbackWaiting = true;
+                INTERACTION_EVENTS.forEach(function(event) {
+                    document.body.addEventListener(event, userInteractionCallbackFunc);
+                });
             }
         },
 
@@ -15486,7 +15514,7 @@ Scoped.binding('module', 'root:BetaJS.Media');
 Scoped.define("module:", function () {
 	return {
     "guid": "8475efdb-dd7e-402e-9f50-36c76945a692",
-    "version": "0.0.87"
+    "version": "0.0.91"
 };
 });
 
@@ -17713,6 +17741,16 @@ Scoped.define("module:Player.Html5VideoPlayerWrapper", ["module:Player.VideoPlay
                     this._audioElement.currentTime = position;
             },
 
+            setSpeed: function(speed) {
+                if (speed < 0.5 && speed > 4.0) {
+                    console.warn('Maximum allowed speed range is from 0.5 to 4.0');
+                    return;
+                }
+                this._element.playbackRate = speed;
+                if (this._audioElement)
+                    this._audioElement.playbackRate = speed;
+            },
+
             muted: function() {
                 return (this._audioElement ? this._audioElement : this._element).muted;
             },
@@ -19873,7 +19911,7 @@ Scoped.extend("module:Recorder.VideoRecorderWrapper", ["module:Recorder.VideoRec
     return {};
 });
 
-Scoped.define("module:WebRTC.Support", ["base:Promise","base:Objs","browser:Info","base:Time"], function (Promise, Objs, Info, Time) {
+Scoped.define("module:WebRTC.Support", ["base:Promise","base:Objs","browser:Info","browser:Dom","base:Time"], function (Promise, Objs, Info, Dom, Time) {
     return {
 
         canvasSupportsImageFormat: function(imageFormat) {
@@ -19904,9 +19942,14 @@ Scoped.define("module:WebRTC.Support", ["base:Promise","base:Objs","browser:Info
             var audioContextScriptProcessor = null;
             var createAnalyser = null;
             if (AudioContext) {
-                var audioContext = new AudioContext();
-                audioContextScriptProcessor = audioContext.createJavaScriptNode || audioContext.createScriptProcessor;
-                createAnalyser = audioContext.createAnalyser;
+                Dom.userInteraction(function() {
+                    if (!this.__globals)
+                        return;
+                    var audioContext = new AudioContext();
+                    this.__globals.audioContext = audioContext;
+                    this.__globals.audioContextScriptProcessor = audioContext.createJavaScriptNode || audioContext.createScriptProcessor;
+                    this.__globals.createAnalyser = audioContext.createAnalyser;
+                }, this);
             }
             var RTCPeerConnection = window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
             var RTCIceCandidate = window.RTCIceCandidate || window.mozRTCIceCandidate || window.webkitRTCIceCandidate;
@@ -19918,8 +19961,8 @@ Scoped.define("module:WebRTC.Support", ["base:Promise","base:Objs","browser:Info
                 URL: URL,
                 MediaRecorder: MediaRecorder,
                 AudioContext: AudioContext,
-                createAnalyser: createAnalyser,
-                audioContextScriptProcessor: audioContextScriptProcessor,
+                //createAnalyser: createAnalyser,
+                //audioContextScriptProcessor: audioContextScriptProcessor,
                 webpSupport: this.canvasSupportsImageFormat("image/webp"),
                 RTCPeerConnection: RTCPeerConnection,
                 RTCIceCandidate: RTCIceCandidate,
@@ -20202,9 +20245,9 @@ Scoped.define("module:WebRTC.Support", ["base:Promise","base:Objs","browser:Info
                 video = document.createElement("video");
             video.volume = 0;
             video.muted = true;
-            if (video.mozSrcObject !== undefined)
+            if ('mozSrcObject' in video)
                 video.mozSrcObject = stream;
-            else if (Info.isSafari() || (Info.isChrome() && Info.chromeVersion() >= 65))
+            else if ('srcObject' in video)
                 video.srcObject = stream;
             else
                 video.src = this.globals().URL.createObjectURL(stream);
@@ -20256,8 +20299,11 @@ Scoped.define("module:WebRTC.AudioAnalyser", ["base:Class","module:WebRTC.Suppor
 
             constructor: function(stream) {
                 inherited.constructor.call(this);
+                /*
                 var AudioContext = Support.globals().AudioContext;
                 this._audioContext = new AudioContext();
+                */
+                this._audioContext = Support.globals().audioContext;
                 this._analyserNode = Support.globals().createAnalyser.call(this._audioContext);
                 this._analyserNode.fftSize = 32;
                 if (stream.getAudioTracks().length > 0) {
@@ -20269,8 +20315,8 @@ Scoped.define("module:WebRTC.AudioAnalyser", ["base:Class","module:WebRTC.Suppor
             destroy: function() {
                 this._analyserNode.disconnect();
                 delete this._analyserNode;
-                this._audioContext.close();
-                delete this._audioContext;
+                //this._audioContext.close();
+                //delete this._audioContext;
                 inherited.destroy.call(this);
             },
 
@@ -20290,7 +20336,7 @@ Scoped.define("module:WebRTC.AudioAnalyser", ["base:Class","module:WebRTC.Suppor
     }, {
 
         supported: function() {
-            return !!Support.globals().AudioContext && !!Support.globals().createAnalyser;
+            return !!Support.globals().AudioContext && !!Support.globals().createAnalyser && !!Support.globals().audioContext;
         }
 
     });
@@ -21364,7 +21410,7 @@ Scoped.define("module:Recorder.WebRTCVideoRecorderWrapper", ["module:Recorder.Vi
             },
 
             soundLevel: function() {
-                if (!this._analyser && this._recorder && this._recorder.stream())
+                if (!this._analyser && this._recorder && this._recorder.stream() && AudioAnalyser.supported())
                     this._analyser = new AudioAnalyser(this._recorder.stream());
                 return this._analyser ? this._analyser.soundLevel() : 0.0;
             },
@@ -21374,7 +21420,7 @@ Scoped.define("module:Recorder.WebRTCVideoRecorderWrapper", ["module:Recorder.Vi
                     this._analyser.weakDestroy();
                     delete this._analyser;
                 }
-                if (activate)
+                if (activate && AudioAnalyser.supported())
                     this._analyser = new AudioAnalyser(this._recorder.stream());
             },
 
@@ -21418,7 +21464,10 @@ Scoped.define("module:Recorder.WebRTCVideoRecorderWrapper", ["module:Recorder.Vi
                 image.style.position = "absolute";
                 this.updateSnapshotDisplay(snapshot, image, x, y, w, h);
                 image.src = url;
-                Dom.elementPrependChild(parent, image);
+                if (parent.tagName.toLowerCase() === "video")
+                    Dom.elementInsertAfter(image, parent);
+                else
+                    Dom.elementPrependChild(parent, image);
                 return image;
             },
 
@@ -24916,7 +24965,7 @@ Scoped.binding('module', 'root:BetaJS.MediaComponents');
 Scoped.define("module:", function () {
 	return {
     "guid": "7a20804e-be62-4982-91c6-98eb096d2e70",
-    "version": "0.0.109"
+    "version": "0.0.131"
 };
 });
 
@@ -26867,11 +26916,7 @@ Scoped.define("module:Assets", ["base:Classes.LocaleTable","browser:Info"], func
 
         imageviewerthemes: {},
 
-        imagecapturethemes: {},
-
-        audioplayerthemes: {},
-
-        audiorecorderthemes: {}
+        audioplayerthemes: {}
 
     };
 });
@@ -27206,7 +27251,7 @@ Scoped.define("module:VideoPlayer.Dynamics.Controlbar", ["dynamics:Dynamic","bas
         }, function(inherited) {
             return {
 
-                template: "\n<div class=\"{{css}}-dashboard {{activitydelta > hidebarafter && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\t<div tabindex=\"{{skipinitial ? 2 : 1}}\" data-selector=\"progress-bar-inner\" class=\"{{css}}-progressbar {{activitydelta < 2500 || ismobile ? '' : (css + '-progressbar-small')}} {{disableseeking ? css + '-disabled' : ''}}\"\n\t\t ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n\t\t ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n         ba-hotkey:alt+right=\"{{seek(position + skipseconds * 3)}}\"\n         ba-hotkey:alt+left=\"{{seek(position - skipseconds * 3)}}\"\n\t\t onmouseout=\"this.blur()\"\n\t     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n\t     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n\t     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n\t     onmousemove=\"{{progressUpdatePosition(domEvent)}}\">\n\t\t<div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n\t\t<div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n\t\t\t<div class=\"{{css}}-progressbar-button\"></div>\n\t\t</div>\n\t</div>\n\n\t<div class=\"{{css}}-backbar\"></div>\n\n\t<div class=\"{{css}}-controlbar\">\n\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n\t\t\t ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container\"\n\t\t\t ba-if=\"{{submittable}}\" ba-click=\"{{submit()}}\">\n            <div class=\"{{css}}-button-inner\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container\" ba-if=\"{{rerecordable}}\"\n\t\t\t ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n\t\t>\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-ccw\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 2}}\" data-selector=\"button-icon-play\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_player()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container\" title=\"{{string('play-video')}}\"\n\t\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\"\n\t\t>\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-play\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 2}}\" data-selector=\"button-icon-pause\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_player()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container {{disablepause ? css + '-disabled' : ''}}\"\n\t\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\" ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\"\n\t\t\t title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n\t\t>\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-pause\"></i>\n            </div>\n        </div>\n\n\t\t<div class=\"{{css}}-time-container\">\n\t\t\t<div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n\t\t\t<div class=\"{{css}}-time-sep\">/</div>\n\t\t\t<div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n\t\t</div>\n\n\t\t<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-container\" ba-if=\"{{title}}\">\n\t\t\t<p class=\"{{css}}-video-title\">\n\t\t\t\t{{title}}\n\t\t\t</p>\n\t\t</div>\n\n\t\t<div tabindex=\"9\" data-selector=\"cc-button-container\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n\t\t\t ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n\t\t\t class=\"{{css}}-rightbutton-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n\t\t\t title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n\t\t\t ba-click=\"{{toggle_tracks()}}\"\n\t\t\t onmouseover=\"{{hover_cc(true)}}\"\n\t\t\t onmouseleave=\"{{hover_cc(false)}}\"\n\t\t>\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<i class=\"{{css}}-icon-subtitle\"></i>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t onkeydown=\"{{tab_index_move(domEvent)}}\" ba-if=\"{{fullscreen}}\"\n\t\t\t ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\">\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\n        <div tabindex=\"7\" data-selector=\"button-airplay\"\n\t\t\t ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\">\n            <div class=\"{{css}}-airplay-container\">\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    <!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n        </div>\n\n        <div data-selector=\"button-chromecast\" class=\"{{css}}-rightbutton-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button tabindex=\"0\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"6\" data-selector=\"button-stream-label\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\"\n\t\t\t title=\"{{string('change-resolution')}}\"\n\t\t>\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<span class=\"{{css}}-button-text\">{{currentstream_label}}</span>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-volumebar\">\n\t\t\t<div tabindex=\"5\" data-selector=\"button-volume-bar\"\n\t\t\t\t ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\" ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n\t\t\t\t ba-hotkey:up=\"{{set_volume(1)}}\" ba-hotkey:down=\"{{set_volume(0)}}\"\n\t\t\t\t onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-volumebar-inner\"\n\t\t\t     onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                 onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n\t\t\t>\n\t\t\t\t<div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.min(100, Math.round(volume * 100)) + '%'}}}\">\n\t\t\t\t    <div class=\"{{css}}-volumebar-button\" title=\"{{string('volume-button')}}\"></div>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div tabindex=\"4\" data-selector=\"button-icon-volume\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\">\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n</div>\n",
+                template: "\n<div class=\"{{css}}-dashboard {{activitydelta > hidebarafter && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\t<div tabindex=\"{{skipinitial ? 2 : 1}}\" data-selector=\"progress-bar-inner\" class=\"{{css}}-progressbar {{activitydelta < 2500 || ismobile ? '' : (css + '-progressbar-small')}} {{disableseeking ? css + '-disabled' : ''}}\"\n\t\t ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n\t\t ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n         ba-hotkey:alt+right=\"{{seek(position + skipseconds * 3)}}\"\n         ba-hotkey:alt+left=\"{{seek(position - skipseconds * 3)}}\"\n\t\t onmouseout=\"this.blur()\"\n\t     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n\t     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n\t     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n\t     onmousemove=\"{{progressUpdatePosition(domEvent)}}\">\n\t\t<div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n\t\t<div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n\t\t\t<div class=\"{{css}}-progressbar-button\"></div>\n\t\t</div>\n\t</div>\n\n\t<div class=\"{{css}}-backbar\"></div>\n\n\t<div class=\"{{css}}-controlbar\">\n\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n\t\t\t ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container\"\n\t\t\t ba-if=\"{{submittable}}\" ba-click=\"{{submit()}}\">\n            <div class=\"{{css}}-button-inner\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container\" ba-if=\"{{rerecordable}}\"\n\t\t\t ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n\t\t>\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-ccw\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 2}}\" data-selector=\"button-icon-play\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_player()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container\" title=\"{{string('play-video')}}\"\n\t\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\"\n\t\t>\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-play\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 2}}\" data-selector=\"button-icon-pause\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_player()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-leftbutton-container {{disablepause ? css + '-disabled' : ''}}\"\n\t\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\" ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\"\n\t\t\t title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n\t\t>\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-pause\"></i>\n            </div>\n        </div>\n\n\t\t<div class=\"{{css}}-time-container\">\n\t\t\t<div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n\t\t\t<div class=\"{{css}}-time-sep\">/</div>\n\t\t\t<div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n\t\t</div>\n\n\t\t<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-container\" ba-if=\"{{title}}\">\n\t\t\t<p class=\"{{css}}-video-title\">\n\t\t\t\t{{title}}\n\t\t\t</p>\n\t\t</div>\n\n\t\t<div tabindex=\"9\" data-selector=\"cc-button-container\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n\t\t\t ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n\t\t\t class=\"{{css}}-rightbutton-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n\t\t\t title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n\t\t\t ba-click=\"{{toggle_tracks()}}\"\n\t\t\t onmouseover=\"{{hover_cc(true)}}\"\n\t\t\t onmouseleave=\"{{hover_cc(false)}}\"\n\t\t>\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<i class=\"{{css}}-icon-subtitle\"></i>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t onkeydown=\"{{tab_index_move(domEvent)}}\" ba-if=\"{{fullscreen}}\"\n\t\t\t ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\">\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\n        <div tabindex=\"7\" data-selector=\"button-airplay\"\n\t\t\t ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\">\n            <div class=\"{{css}}-airplay-container\">\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    \n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n        </div>\n\n        <div data-selector=\"button-chromecast\" class=\"{{css}}-rightbutton-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button tabindex=\"0\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"6\" data-selector=\"button-stream-label\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\"\n\t\t\t title=\"{{string('change-resolution')}}\"\n\t\t>\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<span class=\"{{css}}-button-text\">{{currentstream_label}}</span>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-volumebar\">\n\t\t\t<div tabindex=\"5\" data-selector=\"button-volume-bar\"\n\t\t\t\t ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\" ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n\t\t\t\t ba-hotkey:up=\"{{set_volume(1)}}\" ba-hotkey:down=\"{{set_volume(0)}}\"\n\t\t\t\t onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-volumebar-inner\"\n\t\t\t     onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                 onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n\t\t\t>\n\t\t\t\t<div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.min(100, Math.round(volume * 100)) + '%'}}}\">\n\t\t\t\t    <div class=\"{{css}}-volumebar-button\" title=\"{{string('volume-button')}}\"></div>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div tabindex=\"4\" data-selector=\"button-icon-volume\"\n\t\t\t ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-rightbutton-container\"\n\t\t\t ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\">\n\t\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t\t<i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n</div>\n",
 
                 attrs: {
                     "css": "ba-videoplayer",
@@ -27484,7 +27529,7 @@ Scoped.define("module:VideoPlayer.Dynamics.Playbutton", ["dynamics:Dynamic","mod
         }, function(inherited) {
             return {
 
-                template: "\n<div tabindex=\"0\" data-selector=\"play-button\"\n     ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n     onkeydown=\"{{tab_index_move(domEvent, null, 'player-toggle-overlay')}}\"\n     class=\"{{css}}-playbutton-container\" ba-click=\"{{play()}}\" title=\"{{string('tooltip')}}\"\n>\n\t<div class=\"{{css}}-playbutton-button\"></div>\n</div>\n\n<div class=\"{{css}}-rerecord-bar\" ba-if=\"{{rerecordable || submittable}}\">\n\t<div class=\"{{css}}-rerecord-backbar\"></div>\n\t<div class=\"{{css}}-rerecord-frontbar\">\n        <div class=\"{{css}}-rerecord-button-container\" ba-if=\"{{submittable}}\">\n            <div tabindex=\"0\" data-selector=\"player-submit-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-rerecord-button\" onclick=\"{{submit()}}\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n        <div class=\"{{css}}-rerecord-button-container\" ba-if=\"{{rerecordable}}\">\n        \t<div tabindex=\"0\" data-selector=\"player-rerecord-button\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-rerecord-button\" onclick=\"{{rerecord()}}\">\n        \t\t{{string('rerecord')}}\n        \t</div>\n        </div>\n\t</div>\n</div>\n",
+                template: "\n<div tabindex=\"0\" data-selector=\"play-button\"\n     ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n     onkeydown=\"{{tab_index_move(domEvent, null, 'player-toggle-overlay')}}\"\n     class=\"{{css}}-playbutton-container\" ba-click=\"{{play()}}\" title=\"{{string('tooltip')}}\"\n>\n\t<div class=\"{{css}}-playbutton-button\"></div>\n</div>\n\n<div class=\"{{css}}-rerecord-bar\" ba-if=\"{{rerecordable || submittable}}\">\n\t<div class=\"{{css}}-rerecord-backbar\"></div>\n\t<div class=\"{{css}}-rerecord-frontbar\">\n        <div class=\"{{css}}-rerecord-button-container\" ba-if=\"{{submittable}}\">\n            <div tabindex=\"0\" data-selector=\"player-submit-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-rerecord-button\" onclick=\"{{submit()}}\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n        <div class=\"{{css}}-rerecord-button-container\" ba-if=\"{{rerecordable}}\">\n        \t<div tabindex=\"0\" data-selector=\"player-rerecord-button\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-rerecord-button\" onclick=\"{{rerecord()}}\">\n                <i class=\"{{css}}-icon-rerecord\"></i>\n        \t</div>\n        </div>\n\t</div>\n</div>\n",
 
                 attrs: {
                     "css": "ba-videoplayer",
@@ -27515,7 +27560,7 @@ Scoped.define("module:VideoPlayer.Dynamics.Playbutton", ["dynamics:Dynamic","mod
             };
         })
         .register("ba-videoplayer-playbutton")
-        .registerFunctions({ /**/"play()": function (obj) { with (obj) { return play(); } }, "tab_index_move(domEvent, null, 'player-toggle-overlay')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'player-toggle-overlay'); } }, "css": function (obj) { with (obj) { return css; } }, "string('tooltip')": function (obj) { with (obj) { return string('tooltip'); } }, "rerecordable || submittable": function (obj) { with (obj) { return rerecordable || submittable; } }, "submittable": function (obj) { with (obj) { return submittable; } }, "submit()": function (obj) { with (obj) { return submit(); } }, "string('submit-video')": function (obj) { with (obj) { return string('submit-video'); } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "string('rerecord')": function (obj) { with (obj) { return string('rerecord'); } }/**/ })
+        .registerFunctions({ /**/"play()": function (obj) { with (obj) { return play(); } }, "tab_index_move(domEvent, null, 'player-toggle-overlay')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'player-toggle-overlay'); } }, "css": function (obj) { with (obj) { return css; } }, "string('tooltip')": function (obj) { with (obj) { return string('tooltip'); } }, "rerecordable || submittable": function (obj) { with (obj) { return rerecordable || submittable; } }, "submittable": function (obj) { with (obj) { return submittable; } }, "submit()": function (obj) { with (obj) { return submit(); } }, "string('submit-video')": function (obj) { with (obj) { return string('submit-video'); } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }/**/ })
         .attachStringTable(Assets.strings)
         .addStrings({
             "tooltip": "Click to play.",
@@ -28104,13 +28149,13 @@ Scoped.define("module:VideoPlayer.Dynamics.Tracks", ["dynamics:Dynamic","base:As
         });
 });
 
-Scoped.define("module:VideoPlayer.Dynamics.Player", ["dynamics:Dynamic","module:Assets","browser:Info","browser:Dom","media:Player.VideoPlayerWrapper","media:Player.Broadcasting","base:Types","base:Objs","base:Strings","base:Time","base:Timers","base:States.Host","base:Classes.ClassRegistry","base:Async","module:VideoPlayer.Dynamics.PlayerStates.Initial","module:VideoPlayer.Dynamics.PlayerStates","module:Ads.AbstractVideoAdProvider","browser:Events"], ["module:VideoPlayer.Dynamics.Playbutton","module:VideoPlayer.Dynamics.Message","module:VideoPlayer.Dynamics.Loader","module:VideoPlayer.Dynamics.Share","module:VideoPlayer.Dynamics.Controlbar","module:VideoPlayer.Dynamics.Tracks","dynamics:Partials.EventPartial","dynamics:Partials.OnPartial","dynamics:Partials.TogglePartial","dynamics:Partials.StylesPartial","dynamics:Partials.TemplatePartial","dynamics:Partials.HotkeyPartial"], function (Class, Assets, Info, Dom, VideoPlayerWrapper, Broadcasting, Types, Objs, Strings, Time, Timers, Host, ClassRegistry, Async, InitialState, PlayerStates, AdProvider, DomEvents, scoped) {
+Scoped.define("module:VideoPlayer.Dynamics.Player", ["dynamics:Dynamic","module:Assets","browser:Info","browser:Dom","media:Player.VideoPlayerWrapper","media:Player.Broadcasting","base:Types","base:Objs","base:Strings","base:Time","base:Timers","base:TimeFormat","base:States.Host","base:Classes.ClassRegistry","base:Async","module:VideoPlayer.Dynamics.PlayerStates.Initial","module:VideoPlayer.Dynamics.PlayerStates","module:Ads.AbstractVideoAdProvider","browser:Events"], ["module:VideoPlayer.Dynamics.Playbutton","module:VideoPlayer.Dynamics.Message","module:VideoPlayer.Dynamics.Loader","module:VideoPlayer.Dynamics.Share","module:VideoPlayer.Dynamics.Controlbar","module:VideoPlayer.Dynamics.Tracks","dynamics:Partials.EventPartial","dynamics:Partials.OnPartial","dynamics:Partials.TogglePartial","dynamics:Partials.StylesPartial","dynamics:Partials.TemplatePartial","dynamics:Partials.HotkeyPartial"], function (Class, Assets, Info, Dom, VideoPlayerWrapper, Broadcasting, Types, Objs, Strings, Time, Timers, TimeFormat, Host, ClassRegistry, Async, InitialState, PlayerStates, AdProvider, DomEvents, scoped) {
     return Class.extend({
             scoped: scoped
         }, function(inherited) {
             return {
 
-                template: "<div itemscope itemtype=\"http://schema.org/VideoObject\"\n     class=\"{{css}}-container {{css}}-size-{{csssize}} {{iecss}}-{{ie8 ? 'ie8' : 'noie8'}} {{csstheme}} {{css}}-{{ fullscreened ? 'fullscreen' : 'normal' }}-view {{css}}-{{ firefox ? 'firefox' : 'common'}}-browser\n    {{css}}-{{themecolor}}-color\"\n     ba-on:mousemove=\"{{user_activity()}}\"\n     ba-on:mousedown=\"{{user_activity(true)}}\"\n     ba-on:touchstart=\"{{user_activity(true)}}\"\n     ba-styles=\"{{widthHeightStyles}}\"\n>\n    <video tabindex=\"-1\" class=\"{{css}}-video\" data-video=\"video\"\n           ba-toggle:playsinline=\"{{!playfullscreenonmobile}}\"\n    ></video>\n    <div class=\"{{css}}-overlay\">\n        <div tabindex=\"-1\" class=\"{{css}}-player-toggle-overlay\" data-selector=\"player-toggle-overlay\"\n             ba-hotkey:right=\"{{seek(position + skipseconds)}}\" ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n             ba-hotkey:alt+right=\"{{seek(position + skipseconds * 3)}}\" ba-hotkey:alt+left=\"{{seek(position - skipseconds * 3)}}\"\n             ba-hotkey:up=\"{{set_volume(volume + 0.1)}}\" ba-hotkey:down=\"{{set_volume(volume - 0.1)}}\"\n             ba-hotkey:space^enter=\"{{toggle_player()}}\"\n             ba-on:click=\"{{toggle_player()}}\"\n        ></div>\n        <ba-{{dyncontrolbar}}\n            ba-css=\"{{csscontrolbar || css}}\"\n            ba-themecolor=\"{{themecolor}}\"\n            ba-template=\"{{tmplcontrolbar}}\"\n            ba-show=\"{{controlbar_active}}\"\n            ba-playing=\"{{playing}}\"\n            ba-playwhenvisible=\"{{playwhenvisible}}\"\n            ba-airplay=\"{{airplay}}\"\n            ba-airplaybuttonvisible=\"{{airplaybuttonvisible}}\"\n            ba-chromecast=\"{{chromecast}}\"\n            ba-castbuttonvisble=\"{{castbuttonvisble}}\"\n            ba-event:rerecord=\"rerecord\"\n            ba-event:submit=\"submit\"\n            ba-event:play=\"play\"\n            ba-event:pause=\"pause\"\n            ba-event:position=\"seek\"\n            ba-event:volume=\"set_volume\"\n            ba-event:fullscreen=\"toggle_fullscreen\"\n            ba-event:toggle_player=\"toggle_player\"\n            ba-event:tab_index_move=\"tab_index_move\"\n            ba-event:seek=\"seek\"\n            ba-event:set_volume=\"set_volume\"\n            ba-tabindex=\"{{tabindex}}\"\n            ba-tracktextvisible=\"{{tracktextvisible}}\"\n            ba-tracktags=\"{{tracktags}}\"\n            ba-tracktagssupport=\"{{tracktagssupport}}\"\n            ba-allowtexttrackupload=\"{{allowtexttrackupload}}\"\n            ba-tracksshowselection=\"{{tracksshowselection}}\"\n            ba-volume=\"{{volume}}\"\n            ba-duration=\"{{duration}}\"\n            ba-cached=\"{{buffered}}\"\n            ba-title=\"{{title}}\"\n            ba-position=\"{{position}}\"\n            ba-activitydelta=\"{{activity_delta}}\"\n            ba-hideoninactivity=\"{{hideoninactivity}}\"\n            ba-hidebarafter=\"{{hidebarafter}}\"\n            ba-rerecordable=\"{{rerecordable}}\"\n            ba-submittable=\"{{submittable}}\"\n            ba-streams=\"{{streams}}\"\n            ba-currentstream=\"{{=currentstream}}\"\n            ba-fullscreen=\"{{fullscreensupport && !nofullscreen}}\"\n            ba-fullscreened=\"{{fullscreened}}\"\n            ba-source=\"{{source}}\"\n            ba-disablepause=\"{{disablepause}}\"\n            ba-disableseeking=\"{{disableseeking}}\"\n            ba-skipseconds=\"{{skipseconds}}\"\n            ba-skipinitial=\"{{skipinitial}}\"\n        ></ba-{{dyncontrolbar}}>\n\n        <ba-{{dyntracks}}\n            ba-css=\"{{csstracks || css}}\"\n            ba-show=\"{{tracktagssupport || allowtexttrackupload}}\"\n            ba-tracksshowselection=\"{{tracksshowselection}}\"\n            ba-trackselectorhovered=\"{{trackselectorhovered}}\"\n            ba-tracktags=\"{{tracktags}}\"\n            ba-tracktagsstyled=\"{{tracktagsstyled}}\"\n            ba-trackcuetext=\"{{trackcuetext}}\"\n            ba-allowtexttrackupload=\"{{allowtexttrackupload}}\"\n            ba-uploadtexttracksvisible=\"{{uploadtexttracksvisible}}\"\n            ba-acceptedtracktexts=\"{{acceptedtracktexts}}\"\n            ba-uploadlocales=\"{{uploadlocales}}\"\n            ba-event:selected_label_value=\"selected_label_value\"\n            ba-event:upload-text-tracks=\"upload_text_tracks\"\n            ba-event:move_to_option=\"move_to_option\"\n        ></ba-{{dyntracks}}>\n\n        <ba-{{dynplaybutton}}\n            ba-css=\"{{cssplaybutton || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplplaybutton}}\"\n            ba-show=\"{{playbutton_active}}\"\n            ba-rerecordable=\"{{rerecordable}}\"\n            ba-submittable=\"{{submittable}}\"\n            ba-event:play=\"playbutton_click\"\n            ba-event:rerecord=\"rerecord\"\n            ba-event:submit=\"submit\"\n            ba-event:tab_index_move=\"tab_index_move\"\n        ></ba-{{dynplaybutton}}>\n\n        <ba-{{dynloader}}\n            ba-css=\"{{cssloader || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplloader}}\"\n            ba-playwhenvisible=\"{{playwhenvisible}}\"\n            ba-show=\"{{loader_active}}\"\n        ></ba-{{dynloader}}>\n\n        <ba-{{dynshare}}\n            ba-css=\"{{cssshare || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplshare}}\"\n            ba-show=\"{{sharevideourl && sharevideo.length > 0}}\"\n            ba-url=\"{{sharevideourl}}\"\n            ba-shares=\"{{sharevideo}}\"\n        ></ba-{{dynshare}}>\n\n        <ba-{{dynmessage}}\n            ba-css=\"{{cssmessage || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplmessage}}\"\n            ba-show=\"{{message_active}}\"\n            ba-message=\"{{message}}\"\n            ba-event:click=\"message_click\"\n        ></ba-{{dynmessage}}>\n\n        <ba-{{dyntopmessage}}\n            ba-css=\"{{csstopmessage || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmpltopmessage}}\"\n            ba-show=\"{{topmessage}}\"\n            ba-topmessage=\"{{topmessage}}\"\n        ></ba-{{dyntopmessage}}>\n\n        <meta itemprop=\"caption\" content=\"{{title}}\" />\n        <meta itemprop=\"thumbnailUrl\" content=\"{{poster}}\"/>\n        <meta itemprop=\"contentUrl\" content=\"{{source}}\"/>\n    </div>\n    <div class=\"{{css}}-overlay\" data-video=\"ad\" style=\"display:none\"></div>\n</div>\n",
+                template: "<div itemscope itemtype=\"http://schema.org/VideoObject\"\n     class=\"{{css}}-container {{css}}-size-{{csssize}} {{iecss}}-{{ie8 ? 'ie8' : 'noie8'}} {{csstheme}} {{css}}-{{ fullscreened ? 'fullscreen' : 'normal' }}-view {{css}}-{{ firefox ? 'firefox' : 'common'}}-browser\n    {{css}}-{{themecolor}}-color\"\n     ba-on:mousemove=\"{{user_activity()}}\"\n     ba-on:mousedown=\"{{user_activity(true)}}\"\n     ba-on:touchstart=\"{{user_activity(true)}}\"\n     ba-styles=\"{{widthHeightStyles}}\"\n>\n    <video tabindex=\"-1\" class=\"{{css}}-video\" data-video=\"video\"\n           ba-toggle:playsinline=\"{{!playfullscreenonmobile}}\"\n    ></video>\n    <div class=\"{{css}}-overlay\">\n        <div tabindex=\"-1\" class=\"{{css}}-player-toggle-overlay\" data-selector=\"player-toggle-overlay\"\n             ba-hotkey:right=\"{{seek(position + skipseconds)}}\" ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n             ba-hotkey:alt+right=\"{{seek(position + skipseconds * 3)}}\" ba-hotkey:alt+left=\"{{seek(position - skipseconds * 3)}}\"\n             ba-hotkey:up=\"{{set_volume(volume + 0.1)}}\" ba-hotkey:down=\"{{set_volume(volume - 0.1)}}\"\n             ba-hotkey:space^enter=\"{{toggle_player()}}\"\n             ba-on:click=\"{{toggle_player()}}\"\n        >\n            <div class=\"{{css}}-player-static-duration\" ba-if=\"{{!playing && totalduration && !controlbar_active}}\">\n                <span>{{formatTime(totalduration)}}</span>\n            </div>\n        </div>\n        <ba-{{dyncontrolbar}}\n            ba-css=\"{{csscontrolbar || css}}\"\n            ba-themecolor=\"{{themecolor}}\"\n            ba-template=\"{{tmplcontrolbar}}\"\n            ba-show=\"{{controlbar_active}}\"\n            ba-playing=\"{{playing}}\"\n            ba-playwhenvisible=\"{{playwhenvisible}}\"\n            ba-airplay=\"{{airplay}}\"\n            ba-airplaybuttonvisible=\"{{airplaybuttonvisible}}\"\n            ba-chromecast=\"{{chromecast}}\"\n            ba-castbuttonvisble=\"{{castbuttonvisble}}\"\n            ba-event:rerecord=\"rerecord\"\n            ba-event:submit=\"submit\"\n            ba-event:play=\"play\"\n            ba-event:pause=\"pause\"\n            ba-event:position=\"seek\"\n            ba-event:volume=\"set_volume\"\n            ba-event:fullscreen=\"toggle_fullscreen\"\n            ba-event:toggle_player=\"toggle_player\"\n            ba-event:tab_index_move=\"tab_index_move\"\n            ba-event:seek=\"seek\"\n            ba-event:set_volume=\"set_volume\"\n            ba-tabindex=\"{{tabindex}}\"\n            ba-tracktextvisible=\"{{tracktextvisible}}\"\n            ba-tracktags=\"{{tracktags}}\"\n            ba-tracktagssupport=\"{{tracktagssupport}}\"\n            ba-allowtexttrackupload=\"{{allowtexttrackupload}}\"\n            ba-tracksshowselection=\"{{tracksshowselection}}\"\n            ba-volume=\"{{volume}}\"\n            ba-duration=\"{{duration}}\"\n            ba-cached=\"{{buffered}}\"\n            ba-title=\"{{title}}\"\n            ba-position=\"{{position}}\"\n            ba-activitydelta=\"{{activity_delta}}\"\n            ba-hideoninactivity=\"{{hideoninactivity}}\"\n            ba-hidebarafter=\"{{hidebarafter}}\"\n            ba-rerecordable=\"{{rerecordable}}\"\n            ba-submittable=\"{{submittable}}\"\n            ba-streams=\"{{streams}}\"\n            ba-currentstream=\"{{=currentstream}}\"\n            ba-fullscreen=\"{{fullscreensupport && !nofullscreen}}\"\n            ba-fullscreened=\"{{fullscreened}}\"\n            ba-source=\"{{source}}\"\n            ba-disablepause=\"{{disablepause}}\"\n            ba-disableseeking=\"{{disableseeking}}\"\n            ba-skipseconds=\"{{skipseconds}}\"\n            ba-skipinitial=\"{{skipinitial}}\"\n        ></ba-{{dyncontrolbar}}>\n\n        <ba-{{dyntracks}}\n            ba-css=\"{{csstracks || css}}\"\n            ba-show=\"{{tracktagssupport || allowtexttrackupload}}\"\n            ba-tracksshowselection=\"{{tracksshowselection}}\"\n            ba-trackselectorhovered=\"{{trackselectorhovered}}\"\n            ba-tracktags=\"{{tracktags}}\"\n            ba-tracktagsstyled=\"{{tracktagsstyled}}\"\n            ba-trackcuetext=\"{{trackcuetext}}\"\n            ba-allowtexttrackupload=\"{{allowtexttrackupload}}\"\n            ba-uploadtexttracksvisible=\"{{uploadtexttracksvisible}}\"\n            ba-acceptedtracktexts=\"{{acceptedtracktexts}}\"\n            ba-uploadlocales=\"{{uploadlocales}}\"\n            ba-event:selected_label_value=\"selected_label_value\"\n            ba-event:upload-text-tracks=\"upload_text_tracks\"\n            ba-event:move_to_option=\"move_to_option\"\n        ></ba-{{dyntracks}}>\n\n        <ba-{{dynplaybutton}}\n            ba-css=\"{{cssplaybutton || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplplaybutton}}\"\n            ba-show=\"{{playbutton_active}}\"\n            ba-rerecordable=\"{{rerecordable}}\"\n            ba-submittable=\"{{submittable}}\"\n            ba-event:play=\"playbutton_click\"\n            ba-event:rerecord=\"rerecord\"\n            ba-event:submit=\"submit\"\n            ba-event:tab_index_move=\"tab_index_move\"\n        ></ba-{{dynplaybutton}}>\n\n        <ba-{{dynloader}}\n            ba-css=\"{{cssloader || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplloader}}\"\n            ba-playwhenvisible=\"{{playwhenvisible}}\"\n            ba-show=\"{{loader_active}}\"\n        ></ba-{{dynloader}}>\n\n        <ba-{{dynshare}}\n            ba-css=\"{{cssshare || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplshare}}\"\n            ba-show=\"{{sharevideourl && sharevideo.length > 0}}\"\n            ba-url=\"{{sharevideourl}}\"\n            ba-shares=\"{{sharevideo}}\"\n        ></ba-{{dynshare}}>\n\n        <ba-{{dynmessage}}\n            ba-css=\"{{cssmessage || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmplmessage}}\"\n            ba-show=\"{{message_active}}\"\n            ba-message=\"{{message}}\"\n            ba-event:click=\"message_click\"\n        ></ba-{{dynmessage}}>\n\n        <ba-{{dyntopmessage}}\n            ba-css=\"{{csstopmessage || css}}\"\n            ba-theme-color=\"{{themecolor}}\"\n            ba-template=\"{{tmpltopmessage}}\"\n            ba-show=\"{{topmessage}}\"\n            ba-topmessage=\"{{topmessage}}\"\n        ></ba-{{dyntopmessage}}>\n\n        <meta itemprop=\"caption\" content=\"{{title}}\" />\n        <meta itemprop=\"thumbnailUrl\" content=\"{{poster}}\"/>\n        <meta itemprop=\"contentUrl\" content=\"{{source}}\"/>\n    </div>\n    <div class=\"{{css}}-overlay\" data-video=\"ad\" style=\"display:none\"></div>\n</div>\n",
 
                 attrs: {
                     /* CSS */
@@ -28906,6 +28951,11 @@ Scoped.define("module:VideoPlayer.Dynamics.Player", ["dynamics:Dynamic","module:
                         this._resetActivity();
                     },
 
+                    formatTime: function(time) {
+                        time = Math.max(time || 0, 1);
+                        return TimeFormat.format(TimeFormat.ELAPSED_MINUTES_SECONDS, time * 1000);
+                    },
+
                     message_click: function() {
                         this.trigger("message:click");
                     },
@@ -29268,7 +29318,7 @@ Scoped.define("module:VideoPlayer.Dynamics.Player", ["dynamics:Dynamic","module:
             }
 
         }).register("ba-videoplayer")
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "csssize": function (obj) { with (obj) { return csssize; } }, "iecss": function (obj) { with (obj) { return iecss; } }, "ie8 ? 'ie8' : 'noie8'": function (obj) { with (obj) { return ie8 ? 'ie8' : 'noie8'; } }, "csstheme": function (obj) { with (obj) { return csstheme; } }, "fullscreened ? 'fullscreen' : 'normal'": function (obj) { with (obj) { return fullscreened ? 'fullscreen' : 'normal'; } }, "firefox ? 'firefox' : 'common'": function (obj) { with (obj) { return firefox ? 'firefox' : 'common'; } }, "themecolor": function (obj) { with (obj) { return themecolor; } }, "user_activity()": function (obj) { with (obj) { return user_activity(); } }, "user_activity(true)": function (obj) { with (obj) { return user_activity(true); } }, "widthHeightStyles": function (obj) { with (obj) { return widthHeightStyles; } }, "!playfullscreenonmobile": function (obj) { with (obj) { return !playfullscreenonmobile; } }, "seek(position + skipseconds)": function (obj) { with (obj) { return seek(position + skipseconds); } }, "seek(position - skipseconds)": function (obj) { with (obj) { return seek(position - skipseconds); } }, "seek(position + skipseconds * 3)": function (obj) { with (obj) { return seek(position + skipseconds * 3); } }, "seek(position - skipseconds * 3)": function (obj) { with (obj) { return seek(position - skipseconds * 3); } }, "set_volume(volume + 0.1)": function (obj) { with (obj) { return set_volume(volume + 0.1); } }, "set_volume(volume - 0.1)": function (obj) { with (obj) { return set_volume(volume - 0.1); } }, "toggle_player()": function (obj) { with (obj) { return toggle_player(); } }, "dyncontrolbar": function (obj) { with (obj) { return dyncontrolbar; } }, "csscontrolbar || css": function (obj) { with (obj) { return csscontrolbar || css; } }, "tmplcontrolbar": function (obj) { with (obj) { return tmplcontrolbar; } }, "controlbar_active": function (obj) { with (obj) { return controlbar_active; } }, "playing": function (obj) { with (obj) { return playing; } }, "playwhenvisible": function (obj) { with (obj) { return playwhenvisible; } }, "airplay": function (obj) { with (obj) { return airplay; } }, "airplaybuttonvisible": function (obj) { with (obj) { return airplaybuttonvisible; } }, "chromecast": function (obj) { with (obj) { return chromecast; } }, "castbuttonvisble": function (obj) { with (obj) { return castbuttonvisble; } }, "tabindex": function (obj) { with (obj) { return tabindex; } }, "tracktextvisible": function (obj) { with (obj) { return tracktextvisible; } }, "tracktags": function (obj) { with (obj) { return tracktags; } }, "tracktagssupport": function (obj) { with (obj) { return tracktagssupport; } }, "allowtexttrackupload": function (obj) { with (obj) { return allowtexttrackupload; } }, "tracksshowselection": function (obj) { with (obj) { return tracksshowselection; } }, "volume": function (obj) { with (obj) { return volume; } }, "duration": function (obj) { with (obj) { return duration; } }, "buffered": function (obj) { with (obj) { return buffered; } }, "title": function (obj) { with (obj) { return title; } }, "position": function (obj) { with (obj) { return position; } }, "activity_delta": function (obj) { with (obj) { return activity_delta; } }, "hideoninactivity": function (obj) { with (obj) { return hideoninactivity; } }, "hidebarafter": function (obj) { with (obj) { return hidebarafter; } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "submittable": function (obj) { with (obj) { return submittable; } }, "streams": function (obj) { with (obj) { return streams; } }, "currentstream": function (obj) { with (obj) { return currentstream; } }, "fullscreensupport && !nofullscreen": function (obj) { with (obj) { return fullscreensupport && !nofullscreen; } }, "fullscreened": function (obj) { with (obj) { return fullscreened; } }, "source": function (obj) { with (obj) { return source; } }, "disablepause": function (obj) { with (obj) { return disablepause; } }, "disableseeking": function (obj) { with (obj) { return disableseeking; } }, "skipseconds": function (obj) { with (obj) { return skipseconds; } }, "skipinitial": function (obj) { with (obj) { return skipinitial; } }, "dyntracks": function (obj) { with (obj) { return dyntracks; } }, "csstracks || css": function (obj) { with (obj) { return csstracks || css; } }, "tracktagssupport || allowtexttrackupload": function (obj) { with (obj) { return tracktagssupport || allowtexttrackupload; } }, "trackselectorhovered": function (obj) { with (obj) { return trackselectorhovered; } }, "tracktagsstyled": function (obj) { with (obj) { return tracktagsstyled; } }, "trackcuetext": function (obj) { with (obj) { return trackcuetext; } }, "uploadtexttracksvisible": function (obj) { with (obj) { return uploadtexttracksvisible; } }, "acceptedtracktexts": function (obj) { with (obj) { return acceptedtracktexts; } }, "uploadlocales": function (obj) { with (obj) { return uploadlocales; } }, "dynplaybutton": function (obj) { with (obj) { return dynplaybutton; } }, "cssplaybutton || css": function (obj) { with (obj) { return cssplaybutton || css; } }, "tmplplaybutton": function (obj) { with (obj) { return tmplplaybutton; } }, "playbutton_active": function (obj) { with (obj) { return playbutton_active; } }, "dynloader": function (obj) { with (obj) { return dynloader; } }, "cssloader || css": function (obj) { with (obj) { return cssloader || css; } }, "tmplloader": function (obj) { with (obj) { return tmplloader; } }, "loader_active": function (obj) { with (obj) { return loader_active; } }, "dynshare": function (obj) { with (obj) { return dynshare; } }, "cssshare || css": function (obj) { with (obj) { return cssshare || css; } }, "tmplshare": function (obj) { with (obj) { return tmplshare; } }, "sharevideourl && sharevideo.length > 0": function (obj) { with (obj) { return sharevideourl && sharevideo.length > 0; } }, "sharevideourl": function (obj) { with (obj) { return sharevideourl; } }, "sharevideo": function (obj) { with (obj) { return sharevideo; } }, "dynmessage": function (obj) { with (obj) { return dynmessage; } }, "cssmessage || css": function (obj) { with (obj) { return cssmessage || css; } }, "tmplmessage": function (obj) { with (obj) { return tmplmessage; } }, "message_active": function (obj) { with (obj) { return message_active; } }, "message": function (obj) { with (obj) { return message; } }, "dyntopmessage": function (obj) { with (obj) { return dyntopmessage; } }, "csstopmessage || css": function (obj) { with (obj) { return csstopmessage || css; } }, "tmpltopmessage": function (obj) { with (obj) { return tmpltopmessage; } }, "topmessage": function (obj) { with (obj) { return topmessage; } }, "poster": function (obj) { with (obj) { return poster; } }/**/ })
+        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "csssize": function (obj) { with (obj) { return csssize; } }, "iecss": function (obj) { with (obj) { return iecss; } }, "ie8 ? 'ie8' : 'noie8'": function (obj) { with (obj) { return ie8 ? 'ie8' : 'noie8'; } }, "csstheme": function (obj) { with (obj) { return csstheme; } }, "fullscreened ? 'fullscreen' : 'normal'": function (obj) { with (obj) { return fullscreened ? 'fullscreen' : 'normal'; } }, "firefox ? 'firefox' : 'common'": function (obj) { with (obj) { return firefox ? 'firefox' : 'common'; } }, "themecolor": function (obj) { with (obj) { return themecolor; } }, "user_activity()": function (obj) { with (obj) { return user_activity(); } }, "user_activity(true)": function (obj) { with (obj) { return user_activity(true); } }, "widthHeightStyles": function (obj) { with (obj) { return widthHeightStyles; } }, "!playfullscreenonmobile": function (obj) { with (obj) { return !playfullscreenonmobile; } }, "seek(position + skipseconds)": function (obj) { with (obj) { return seek(position + skipseconds); } }, "seek(position - skipseconds)": function (obj) { with (obj) { return seek(position - skipseconds); } }, "seek(position + skipseconds * 3)": function (obj) { with (obj) { return seek(position + skipseconds * 3); } }, "seek(position - skipseconds * 3)": function (obj) { with (obj) { return seek(position - skipseconds * 3); } }, "set_volume(volume + 0.1)": function (obj) { with (obj) { return set_volume(volume + 0.1); } }, "set_volume(volume - 0.1)": function (obj) { with (obj) { return set_volume(volume - 0.1); } }, "toggle_player()": function (obj) { with (obj) { return toggle_player(); } }, "!playing && totalduration && !controlbar_active": function (obj) { with (obj) { return !playing && totalduration && !controlbar_active; } }, "formatTime(totalduration)": function (obj) { with (obj) { return formatTime(totalduration); } }, "dyncontrolbar": function (obj) { with (obj) { return dyncontrolbar; } }, "csscontrolbar || css": function (obj) { with (obj) { return csscontrolbar || css; } }, "tmplcontrolbar": function (obj) { with (obj) { return tmplcontrolbar; } }, "controlbar_active": function (obj) { with (obj) { return controlbar_active; } }, "playing": function (obj) { with (obj) { return playing; } }, "playwhenvisible": function (obj) { with (obj) { return playwhenvisible; } }, "airplay": function (obj) { with (obj) { return airplay; } }, "airplaybuttonvisible": function (obj) { with (obj) { return airplaybuttonvisible; } }, "chromecast": function (obj) { with (obj) { return chromecast; } }, "castbuttonvisble": function (obj) { with (obj) { return castbuttonvisble; } }, "tabindex": function (obj) { with (obj) { return tabindex; } }, "tracktextvisible": function (obj) { with (obj) { return tracktextvisible; } }, "tracktags": function (obj) { with (obj) { return tracktags; } }, "tracktagssupport": function (obj) { with (obj) { return tracktagssupport; } }, "allowtexttrackupload": function (obj) { with (obj) { return allowtexttrackupload; } }, "tracksshowselection": function (obj) { with (obj) { return tracksshowselection; } }, "volume": function (obj) { with (obj) { return volume; } }, "duration": function (obj) { with (obj) { return duration; } }, "buffered": function (obj) { with (obj) { return buffered; } }, "title": function (obj) { with (obj) { return title; } }, "position": function (obj) { with (obj) { return position; } }, "activity_delta": function (obj) { with (obj) { return activity_delta; } }, "hideoninactivity": function (obj) { with (obj) { return hideoninactivity; } }, "hidebarafter": function (obj) { with (obj) { return hidebarafter; } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "submittable": function (obj) { with (obj) { return submittable; } }, "streams": function (obj) { with (obj) { return streams; } }, "currentstream": function (obj) { with (obj) { return currentstream; } }, "fullscreensupport && !nofullscreen": function (obj) { with (obj) { return fullscreensupport && !nofullscreen; } }, "fullscreened": function (obj) { with (obj) { return fullscreened; } }, "source": function (obj) { with (obj) { return source; } }, "disablepause": function (obj) { with (obj) { return disablepause; } }, "disableseeking": function (obj) { with (obj) { return disableseeking; } }, "skipseconds": function (obj) { with (obj) { return skipseconds; } }, "skipinitial": function (obj) { with (obj) { return skipinitial; } }, "dyntracks": function (obj) { with (obj) { return dyntracks; } }, "csstracks || css": function (obj) { with (obj) { return csstracks || css; } }, "tracktagssupport || allowtexttrackupload": function (obj) { with (obj) { return tracktagssupport || allowtexttrackupload; } }, "trackselectorhovered": function (obj) { with (obj) { return trackselectorhovered; } }, "tracktagsstyled": function (obj) { with (obj) { return tracktagsstyled; } }, "trackcuetext": function (obj) { with (obj) { return trackcuetext; } }, "uploadtexttracksvisible": function (obj) { with (obj) { return uploadtexttracksvisible; } }, "acceptedtracktexts": function (obj) { with (obj) { return acceptedtracktexts; } }, "uploadlocales": function (obj) { with (obj) { return uploadlocales; } }, "dynplaybutton": function (obj) { with (obj) { return dynplaybutton; } }, "cssplaybutton || css": function (obj) { with (obj) { return cssplaybutton || css; } }, "tmplplaybutton": function (obj) { with (obj) { return tmplplaybutton; } }, "playbutton_active": function (obj) { with (obj) { return playbutton_active; } }, "dynloader": function (obj) { with (obj) { return dynloader; } }, "cssloader || css": function (obj) { with (obj) { return cssloader || css; } }, "tmplloader": function (obj) { with (obj) { return tmplloader; } }, "loader_active": function (obj) { with (obj) { return loader_active; } }, "dynshare": function (obj) { with (obj) { return dynshare; } }, "cssshare || css": function (obj) { with (obj) { return cssshare || css; } }, "tmplshare": function (obj) { with (obj) { return tmplshare; } }, "sharevideourl && sharevideo.length > 0": function (obj) { with (obj) { return sharevideourl && sharevideo.length > 0; } }, "sharevideourl": function (obj) { with (obj) { return sharevideourl; } }, "sharevideo": function (obj) { with (obj) { return sharevideo; } }, "dynmessage": function (obj) { with (obj) { return dynmessage; } }, "cssmessage || css": function (obj) { with (obj) { return cssmessage || css; } }, "tmplmessage": function (obj) { with (obj) { return tmplmessage; } }, "message_active": function (obj) { with (obj) { return message_active; } }, "message": function (obj) { with (obj) { return message; } }, "dyntopmessage": function (obj) { with (obj) { return dyntopmessage; } }, "csstopmessage || css": function (obj) { with (obj) { return csstopmessage || css; } }, "tmpltopmessage": function (obj) { with (obj) { return tmpltopmessage; } }, "topmessage": function (obj) { with (obj) { return topmessage; } }, "poster": function (obj) { with (obj) { return poster; } }/**/ })
         .attachStringTable(Assets.strings)
         .addStrings({
             "video-error": "An error occurred, please try again later. Click to retry."
@@ -29282,7 +29332,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Chooser", ["dynamics:Dynamic","modu
         }, function(inherited) {
             return {
 
-                template: "<div class=\"{{css}}-chooser-container\">\n\t<div class=\"{{css}}-chooser-button-container\">\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t tabindex=\"0\" class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t     ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   />\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>\n",
+                template: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t tabindex=\"0\" class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t     ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   />\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>\n",
 
                 attrs: {
                     "css": "ba-videorecorder",
@@ -29429,7 +29479,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Controlbar", ["dynamics:Dynamic","m
         }, function(inherited) {
             return {
 
-                template: "<div class=\"{{css}}-dashboard\">\n\t<div class=\"{{css}}-backbar\"></div>\n\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t<div class=\"{{css}}-settings-backbar\"></div>\n\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-settings-front\">\n\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<li>\n\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t/>\n\t\t\t\t\t<span></span>\n\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t</label>\n\t\t\t\t </li>\n\t\t\t</ul>\n\t\t\t<hr ba-show=\"{{(!noaudio && !novideo) || !allowscreen}}\"/>\n\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t>\n\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t<span></span>\n\t\t\t\t\t<label>\n\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t</label>\n\t\t\t\t </li>\n\t\t\t</ul>\n\t\t</div>\n\t</div>\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n        <div class=\"{{css}}-leftbutton-container\" ba-show=\"{{settingsvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected'}}\"\n                 onclick=\"{{settingsopen=!settingsopen}}\"\n                 onmouseenter=\"{{hover(string('settings'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-cog\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{settingsvisible && !novideo && !allowscreen}}\">\n            <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-icon-inner\"\n                 onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{camerahealthy ? 'good' : 'bad' }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{settingsvisible && !noaudio && !allowscreen}}\">\n            <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-icon-inner\"\n                 onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{stopvisible && recordingindication}}\">\n            <div data-selector=\"recording-indicator\" class=\"{{css}}-recording-indication\">\n            </div>\n        </div>\n\n        <div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n        \t<div data-selector=\"record-label-block\" class=\"{{css}}-label-label\">\n        \t\t{{controlbarlabel}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{record()}}\"\n                 onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('record')}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n        \t<div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                 <input type=\"file\"\n\t\t\t\t       class=\"{{css}}-chooser-file\"\n\t\t\t\t       style=\"height:100\"\n\t\t\t\t       onchange=\"{{uploadCovershot(domEvent)}}\"\n\t\t\t\t       accept=\"{{covershot_accept_string}}\"\n\t\t\t\t />\n                 <span>\n        \t\t\t{{string('upload-covershot')}}\n        \t\t</span>\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{rerecordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{rerecord()}}\"\n                 onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('rerecord')}}\n        \t</div>\n        </div>\n\n\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n\t\t\t\t{{string('cancel')}}\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{stopvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n                 onclick=\"{{stop()}}\"\n                 onmouseenter=\"{{hover( mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('stop')}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\"  onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('skip')}}\n        \t</div>\n        </div>\n\t</div>\n</div>\n",
+                template: "<div class=\"{{css}}-dashboard\">\n\t<div class=\"{{css}}-backbar\"></div>\n\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t<div class=\"{{css}}-settings-backbar\"></div>\n\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-settings-front\">\n\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<li>\n\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t/>\n\t\t\t\t\t<span></span>\n\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t</label>\n\t\t\t\t </li>\n\t\t\t</ul>\n\t\t\t<hr ba-show=\"{{(!noaudio && !novideo) || !allowscreen}}\"/>\n\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t>\n\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t<span></span>\n\t\t\t\t\t<label>\n\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t</label>\n\t\t\t\t </li>\n\t\t\t</ul>\n\t\t</div>\n\t</div>\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n        <div class=\"{{css}}-leftbutton-container\" ba-show=\"{{settingsvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected'}}\"\n                 onclick=\"{{settingsopen=!settingsopen}}\"\n                 onmouseenter=\"{{hover(string('settings'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-cog\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{settingsvisible && !novideo && !allowscreen}}\">\n            <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-icon-inner\"\n                 onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{camerahealthy ? 'good' : 'bad' }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{settingsvisible && !noaudio && !allowscreen}}\">\n            <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-icon-inner\"\n                 onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{stopvisible && recordingindication}}\">\n            <div data-selector=\"recording-indicator\" class=\"{{css}}-recording-indication\">\n            </div>\n        </div>\n\n        <div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n        \t<div data-selector=\"record-label-block\" class=\"{{css}}-label-label\">\n        \t\t{{controlbarlabel}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{record()}}\"\n                 onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('record')}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n        \t<div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                 <input type=\"file\"\n\t\t\t\t       class=\"{{css}}-chooser-file\"\n\t\t\t\t       style=\"height:100\"\n\t\t\t\t       onchange=\"{{uploadCovershot(domEvent)}}\"\n\t\t\t\t       accept=\"{{covershot_accept_string}}\"\n\t\t\t\t />\n                 <span>\n        \t\t\t{{string('upload-covershot')}}\n        \t\t</span>\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{rerecordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{rerecord()}}\"\n\t\t\t>\n        \t\t{{string('rerecord')}}\n        \t</div>\n        </div>\n\n\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t>\n\t\t\t\t{{string('cancel')}}\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{stopvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n                 onclick=\"{{stop()}}\"\n\t\t\t>\n        \t\t{{string('stop')}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\"  onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n\t\t\t>\n        \t\t{{string('skip')}}\n        \t</div>\n        </div>\n\t</div>\n</div>\n",
 
                 attrs: {
                     "css": "ba-videorecorder",
@@ -29484,7 +29534,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Controlbar", ["dynamics:Dynamic","m
             };
         })
         .register("ba-videorecorder-controlbar")
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "settingsvisible && settingsopen": function (obj) { with (obj) { return settingsvisible && settingsopen; } }, "cameras": function (obj) { with (obj) { return cameras; } }, "!novideo && !allowscreen": function (obj) { with (obj) { return !novideo && !allowscreen; } }, "selectCamera(camera.id)": function (obj) { with (obj) { return selectCamera(camera.id); } }, "selectedcamera == camera.id": function (obj) { with (obj) { return selectedcamera == camera.id; } }, "camera.label": function (obj) { with (obj) { return camera.label; } }, "(!noaudio && !novideo) || !allowscreen": function (obj) { with (obj) { return (!noaudio && !novideo) || !allowscreen; } }, "microphones": function (obj) { with (obj) { return microphones; } }, "!noaudio && !allowscreen": function (obj) { with (obj) { return !noaudio && !allowscreen; } }, "selectMicrophone(microphone.id)": function (obj) { with (obj) { return selectMicrophone(microphone.id); } }, "selectedmicrophone == microphone.id": function (obj) { with (obj) { return selectedmicrophone == microphone.id; } }, "microphone.label": function (obj) { with (obj) { return microphone.label; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "settingsopen=!settingsopen": function (obj) { with (obj) { return settingsopen=!settingsopen; } }, "settingsopen ? 'selected' : 'unselected'": function (obj) { with (obj) { return settingsopen ? 'selected' : 'unselected'; } }, "hover(string('settings'))": function (obj) { with (obj) { return hover(string('settings')); } }, "unhover()": function (obj) { with (obj) { return unhover(); } }, "settingsvisible && !novideo && !allowscreen": function (obj) { with (obj) { return settingsvisible && !novideo && !allowscreen; } }, "hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))": function (obj) { with (obj) { return hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy')); } }, "camerahealthy ? 'good' : 'bad'": function (obj) { with (obj) { return camerahealthy ? 'good' : 'bad'; } }, "settingsvisible && !noaudio && !allowscreen": function (obj) { with (obj) { return settingsvisible && !noaudio && !allowscreen; } }, "hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))": function (obj) { with (obj) { return hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy')); } }, "microphonehealthy ? 'good' : 'bad'": function (obj) { with (obj) { return microphonehealthy ? 'good' : 'bad'; } }, "stopvisible && recordingindication": function (obj) { with (obj) { return stopvisible && recordingindication; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "record()": function (obj) { with (obj) { return record(); } }, "hover(string('record-tooltip'))": function (obj) { with (obj) { return hover(string('record-tooltip')); } }, "string('record')": function (obj) { with (obj) { return string('record'); } }, "uploadcovershotvisible": function (obj) { with (obj) { return uploadcovershotvisible; } }, "hover(string('upload-covershot-tooltip'))": function (obj) { with (obj) { return hover(string('upload-covershot-tooltip')); } }, "uploadCovershot(domEvent)": function (obj) { with (obj) { return uploadCovershot(domEvent); } }, "covershot_accept_string": function (obj) { with (obj) { return covershot_accept_string; } }, "string('upload-covershot')": function (obj) { with (obj) { return string('upload-covershot'); } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "hover(string('rerecord-tooltip'))": function (obj) { with (obj) { return hover(string('rerecord-tooltip')); } }, "string('rerecord')": function (obj) { with (obj) { return string('rerecord'); } }, "cancelvisible": function (obj) { with (obj) { return cancelvisible; } }, "cancel()": function (obj) { with (obj) { return cancel(); } }, "hover(string('cancel-tooltip'))": function (obj) { with (obj) { return hover(string('cancel-tooltip')); } }, "string('cancel')": function (obj) { with (obj) { return string('cancel'); } }, "stopvisible": function (obj) { with (obj) { return stopvisible; } }, "stop()": function (obj) { with (obj) { return stop(); } }, "mintimeindicator ? css + '-disabled': ''": function (obj) { with (obj) { return mintimeindicator ? css + '-disabled': ''; } }, "mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')": function (obj) { with (obj) { return mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'); } }, "hover( mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))": function (obj) { with (obj) { return hover( mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')); } }, "string('stop')": function (obj) { with (obj) { return string('stop'); } }, "skipvisible": function (obj) { with (obj) { return skipvisible; } }, "skip()": function (obj) { with (obj) { return skip(); } }, "hover(string('skip-tooltip'))": function (obj) { with (obj) { return hover(string('skip-tooltip')); } }, "string('skip')": function (obj) { with (obj) { return string('skip'); } }/**/ })
+        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "settingsvisible && settingsopen": function (obj) { with (obj) { return settingsvisible && settingsopen; } }, "cameras": function (obj) { with (obj) { return cameras; } }, "!novideo && !allowscreen": function (obj) { with (obj) { return !novideo && !allowscreen; } }, "selectCamera(camera.id)": function (obj) { with (obj) { return selectCamera(camera.id); } }, "selectedcamera == camera.id": function (obj) { with (obj) { return selectedcamera == camera.id; } }, "camera.label": function (obj) { with (obj) { return camera.label; } }, "(!noaudio && !novideo) || !allowscreen": function (obj) { with (obj) { return (!noaudio && !novideo) || !allowscreen; } }, "microphones": function (obj) { with (obj) { return microphones; } }, "!noaudio && !allowscreen": function (obj) { with (obj) { return !noaudio && !allowscreen; } }, "selectMicrophone(microphone.id)": function (obj) { with (obj) { return selectMicrophone(microphone.id); } }, "selectedmicrophone == microphone.id": function (obj) { with (obj) { return selectedmicrophone == microphone.id; } }, "microphone.label": function (obj) { with (obj) { return microphone.label; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "settingsopen=!settingsopen": function (obj) { with (obj) { return settingsopen=!settingsopen; } }, "settingsopen ? 'selected' : 'unselected'": function (obj) { with (obj) { return settingsopen ? 'selected' : 'unselected'; } }, "hover(string('settings'))": function (obj) { with (obj) { return hover(string('settings')); } }, "unhover()": function (obj) { with (obj) { return unhover(); } }, "settingsvisible && !novideo && !allowscreen": function (obj) { with (obj) { return settingsvisible && !novideo && !allowscreen; } }, "hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))": function (obj) { with (obj) { return hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy')); } }, "camerahealthy ? 'good' : 'bad'": function (obj) { with (obj) { return camerahealthy ? 'good' : 'bad'; } }, "settingsvisible && !noaudio && !allowscreen": function (obj) { with (obj) { return settingsvisible && !noaudio && !allowscreen; } }, "hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))": function (obj) { with (obj) { return hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy')); } }, "microphonehealthy ? 'good' : 'bad'": function (obj) { with (obj) { return microphonehealthy ? 'good' : 'bad'; } }, "stopvisible && recordingindication": function (obj) { with (obj) { return stopvisible && recordingindication; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "record()": function (obj) { with (obj) { return record(); } }, "hover(string('record-tooltip'))": function (obj) { with (obj) { return hover(string('record-tooltip')); } }, "string('record')": function (obj) { with (obj) { return string('record'); } }, "uploadcovershotvisible": function (obj) { with (obj) { return uploadcovershotvisible; } }, "hover(string('upload-covershot-tooltip'))": function (obj) { with (obj) { return hover(string('upload-covershot-tooltip')); } }, "uploadCovershot(domEvent)": function (obj) { with (obj) { return uploadCovershot(domEvent); } }, "covershot_accept_string": function (obj) { with (obj) { return covershot_accept_string; } }, "string('upload-covershot')": function (obj) { with (obj) { return string('upload-covershot'); } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "string('rerecord')": function (obj) { with (obj) { return string('rerecord'); } }, "cancelvisible": function (obj) { with (obj) { return cancelvisible; } }, "cancel()": function (obj) { with (obj) { return cancel(); } }, "string('cancel')": function (obj) { with (obj) { return string('cancel'); } }, "stopvisible": function (obj) { with (obj) { return stopvisible; } }, "stop()": function (obj) { with (obj) { return stop(); } }, "mintimeindicator ? css + '-disabled': ''": function (obj) { with (obj) { return mintimeindicator ? css + '-disabled': ''; } }, "mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')": function (obj) { with (obj) { return mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'); } }, "string('stop')": function (obj) { with (obj) { return string('stop'); } }, "skipvisible": function (obj) { with (obj) { return skipvisible; } }, "skip()": function (obj) { with (obj) { return skip(); } }, "string('skip')": function (obj) { with (obj) { return string('skip'); } }/**/ })
         .attachStringTable(Assets.strings)
         .addStrings({
             "settings": "Settings",
@@ -29492,13 +29542,13 @@ Scoped.define("module:VideoRecorder.Dynamics.Controlbar", ["dynamics:Dynamic","m
             "cameraunhealthy": "Lighting is not optimal",
             "microphonehealthy": "Sound is good",
             "microphoneunhealthy": "Cannot pick up any sound",
-            "record": "Record",
+            "record": "Start",
             "record-tooltip": "Click here to record.",
             "rerecord": "Redo",
             "rerecord-tooltip": "Click here to redo.",
             "upload-covershot": "Upload Cover",
             "upload-covershot-tooltip": "Click here to upload custom cover shot",
-            "stop": "Stop",
+            "stop": "Done",
             "stop-tooltip": "Click here to stop.",
             "skip": "Skip",
             "skip-tooltip": "Click here to skip.",
@@ -29519,7 +29569,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Faceoutline", ["dynamics:Dynamic"],
             };
         })
         .registerFunctions({ /**//**/ })
-        .register("ba-videorecorder-faceoutline");
+        .register("ba-recorderfaceoutline");
 });
 
 Scoped.define("module:VideoRecorder.Dynamics.Imagegallery", ["dynamics:Dynamic","base:Collections.Collection","base:Properties.Properties","base:Timers.Timer","browser:Dom","browser:Info"], ["dynamics:Partials.StylesPartial"], function (Class, Collection, Properties, Timer, Dom, Info, scoped) {
@@ -29528,13 +29578,15 @@ Scoped.define("module:VideoRecorder.Dynamics.Imagegallery", ["dynamics:Dynamic",
         }, function(inherited) {
             return {
 
-                template: "<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t<div tabindex=\"0\" data-selector=\"slider-left-inner-button\"\n\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{left()}}\"\n\t>\n\t\t<i class=\"{{css}}-icon-left-open\"></i>\n\t</div>\n</div>\n\n<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\"\n\t class=\"{{css}}-imagegallery-container\" data-gallery-container>\n     <div tabindex=\"0\" class=\"{{css}}-imagegallery-image\"\n\t\t  ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n          ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n          onclick=\"{{select(image)}}\"\n\t >\n\t\t <div class=\"{{css}}-imagegallery-image-compat\" ba-show=\"{{ie10below}}\"></div>\n     </div>\n</div>\n\n<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t<div tabindex=\"0\" data-selector=\"slider-right-inner-button\"\n\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{right()}}\"\n\t>\n\t\t<i class=\"{{css}}-icon-right-open\"></i>\n\t</div>\n</div>\n",
+                template: "<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t<div tabindex=\"0\" data-selector=\"slider-left-inner-button\"\n\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{left()}}\"\n\t>\n\t\t<i class=\"{{css}}-icon-left-dir\"></i>\n\t</div>\n</div>\n\n<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\"\n\t class=\"{{css}}-imagegallery-container\" data-gallery-container>\n     <div tabindex=\"0\" class=\"{{css}}-imagegallery-image\"\n\t\t  ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n          ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n          onclick=\"{{select(image)}}\"\n\t >\n\t\t <div class=\"{{css}}-imagegallery-image-compat\" ba-show=\"{{ie10below}}\"></div>\n     </div>\n</div>\n\n<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t<div tabindex=\"0\" data-selector=\"slider-right-inner-button\"\n\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{right()}}\"\n\t>\n\t\t<i class=\"{{css}}-icon-right-dir\"></i>\n\t</div>\n</div>\n",
 
                 attrs: {
                     "css": "ba-videorecorder",
-                    "imagecount": 3,
+                    "imagecount": 5,
                     "imagenativewidth": 0,
                     "imagenativeheight": 0,
+                    "snapshotindex": 0,
+                    "selectedindex": 0,
                     "containerwidth": 0,
                     "containerheight": 0,
                     "containeroffset": 0,
@@ -29561,7 +29613,8 @@ Scoped.define("module:VideoRecorder.Dynamics.Imagegallery", ["dynamics:Dynamic",
                     this.set("ie10below", Info.isInternetExplorer() && Info.internetExplorerVersion() <= 10);
                     var images = this.auto_destroy(new Collection());
                     this.set("images", images);
-                    this.snapshotindex = 0;
+                    this.set("snapshotindex", 0);
+                    this.set("selectedindex", images.length);
                     this._updateImageCount();
                     this.on("change:imagecount", this._updateImageCount, this);
                     this.on("change:imagewidth change:imageheight change:imagedelta", this._recomputeImageBoxes, this);
@@ -29611,7 +29664,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Imagegallery", ["dynamics:Dynamic",
                     var id = this.get("imagedelta");
                     var h = this.get("containerheight");
                     image.set("left", 1 + Math.round(i * (iw + id)));
-                    image.set("top", 1 + Math.round((h - ih) / 2));
+                    image.set("top", 1 + Math.round(h - ih - 24));
                     image.set("width", 1 + Math.round(iw));
                     image.set("height", 1 + Math.round(ih));
                     if (image.snapshot && image.snapshotDisplay) {
@@ -29661,29 +29714,34 @@ Scoped.define("module:VideoRecorder.Dynamics.Imagegallery", ["dynamics:Dynamic",
 
                 loadSnapshots: function() {
                     this.get("images").iterate(function(image) {
-                        this.loadImageSnapshot(image, this.snapshotindex + image.get("index"));
+                        this.loadImageSnapshot(image, this.get("snapshotindex") + image.get("index"));
                     }, this);
                 },
 
-                nextSnapshots: function() {
-                    this.snapshotindex += this.get("imagecount");
+                nextSnapshots: function(snapshotindex) {
+                    this.set("snapshotindex", snapshotindex + this.get("imagecount"));
                     this.loadSnapshots();
                 },
 
-                prevSnapshots: function() {
-                    this.snapshotindex -= this.get("imagecount");
+                prevSnapshots: function(snapshotindex) {
+                    this.set("snapshotindex", snapshotindex - this.get("imagecount"));
                     this.loadSnapshots();
                 },
 
                 functions: {
                     left: function() {
-                        this.prevSnapshots();
+                        this.prevSnapshots(this.get("snapshotindex"));
                     },
                     right: function() {
-                        this.nextSnapshots();
+                        this.nextSnapshots(this.get("snapshotindex"));
                     },
                     select: function(image) {
                         this.trigger("image-selected", image.snapshot);
+                    },
+                    hover: function(image) {
+                        var snapshotindex = this.get("snapshotindex");
+                        this.set("selectedindex", snapshotindex + image.get("index"));
+                        this.trigger("image-hovered", image.snapshot);
                     }
                 }
 
@@ -29728,7 +29786,8 @@ Scoped.define("module:VideoRecorder.Dynamics.Message", ["dynamics:Dynamic"], ["d
                 attrs: {
                     "css": "ba-videorecorder",
                     "message": '',
-                    "links": null
+                    "links": null,
+                    "uploading": false
                 },
 
                 functions: {
@@ -29760,6 +29819,7 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.State", ["base:State
             this.dyn = this.host.dynamic;
             Objs.iter(Objs.extend({
                 "message": false,
+                "message_uploading": false,
                 "chooser": false,
                 "topmessage": false,
                 "controlbar": false,
@@ -29903,6 +29963,10 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.Chooser", ["module:V
             }, this, {
                 initcall: true
             });
+            var that = this;
+            window.setTimeout(function() {
+                that.selectRecord();
+            }, 100);
         },
 
         record: function() {
@@ -30178,23 +30242,24 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.RecordPrepare", ["mo
         _locals: ["preparePromise"],
 
         _started: function() {
+            var countdownSpeed = 700;
             this.dyn.set("message", "");
             this.dyn.set("loaderlabel", "");
             var startedRecording = false;
             this.dyn._accessing_camera = true;
             this._preparePromise = this._preparePromise || this.dyn._prepareRecording();
-            var countdown = this.dyn.get("countdown") ? this.dyn.get("countdown") * 1000 : 0;
+            var countdown = this.dyn.get("countdown") ? this.dyn.get("countdown") * countdownSpeed : 0;
             var delay = this.dyn.recorder.recordDelay(this.dyn.get("uploadoptions")) || 0;
             if (countdown) {
-                var displayDenominator = 1000;
+                var displayDenominator = countdownSpeed;
                 var silentTime = 0;
                 var startTime = Time.now();
                 var endTime = startTime + Math.max(delay, countdown);
                 if (delay > countdown) {
                     silentTime = Math.min(500, delay - countdown);
-                    displayDenominator = (delay - silentTime) / countdown * 1000;
+                    displayDenominator = (delay - silentTime) / countdown * countdownSpeed;
                 } else
-                    this.dyn.set("loaderlabel", this.dyn.get("countdown"));
+                    this.dyn.set("loaderlabel", "" + this.dyn.get("countdown") + "...");
                 var timer = new Timer({
                     context: this,
                     delay: 50,
@@ -30202,8 +30267,8 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.RecordPrepare", ["mo
                         var now = Time.now();
                         var time_left = Math.max(0, endTime - now);
                         if (now > silentTime + startTime) {
-                            this.dyn.set("loaderlabel", "" + Math.ceil((time_left - silentTime) / displayDenominator));
-                            this.dyn.trigger("countdown", Math.round((time_left - silentTime) / displayDenominator * 1000));
+                            this.dyn.set("loaderlabel", "" + Math.ceil((time_left - silentTime) / displayDenominator) + "...");
+                            this.dyn.trigger("countdown", Math.round((time_left - silentTime) / displayDenominator * countdownSpeed));
                         }
                         if (endTime <= now) {
                             this.dyn.set("loaderlabel", "");
@@ -30361,7 +30426,8 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.CovershotSelection",
             this.dyn.set("rerecordvisible", this.dyn.get("early-rerecord"));
             this.dyn.set("uploadcovershotvisible", this.dyn.get("custom-covershots"));
             this.dyn.set("hovermessage", "");
-            this.dyn.set("topmessage", this.dyn.string('pick-covershot'));
+            this.dyn.set("topmessage", "");
+            this.dyn.trigger("pick_cover_start");
             var imagegallery = this.dyn.scope(">[tagname='ba-videorecorder-imagegallery']").materialize(true);
             imagegallery.loadSnapshots();
             imagegallery.updateContainerSize();
@@ -30371,6 +30437,10 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.CovershotSelection",
             this.listenOn(this.dyn, "select-image", function(image) {
                 this.dyn._uploadCovershot(image);
                 this._nextUploading(false);
+            }, this);
+            this.listenOn(this.dyn, "hover-image", function(snapshot) {
+                this.dyn._hideBackgroundSnapshot();
+                this.dyn._displayBackgroundSnapshot(snapshot);
             }, this);
         },
 
@@ -30388,6 +30458,7 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.CovershotSelection",
         },
 
         _nextUploading: function(skippedCovershot) {
+            this.dyn.trigger("pick_cover_end");
             this.next("Uploading");
         }
 
@@ -30444,12 +30515,14 @@ Scoped.define("module:VideoRecorder.Dynamics.RecorderStates.Uploading", ["module
             this.listenOn(uploader, "progress", function(uploaded, total) {
                 this.dyn.trigger("upload_progress", uploaded, total);
                 if (total !== 0 && total > 0 && uploaded >= 0) {
+                    this.dyn.set("message_uploading", true);
                     var up = Math.min(100, Math.round(uploaded / total * 100));
                     if (!isNaN(up)) {
-                        this.dyn.set("message", this.dyn.string("uploading") + ": " + up + "%");
+                        this.dyn.set("message", this.dyn.string("uploading") + " (" + up + "% complete)");
                         this.dyn.set("playertopmessage", this.dyn.get("message"));
                     }
-                }
+                } else
+                    this.dyn.set("message_uploading", false);
             });
             if (this.dyn.get("localplayback") && ((this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback()) || this.dyn._videoFilePlaybackable)) {
                 if (this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback())
@@ -30560,7 +30633,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
         }, function(inherited) {
             return {
 
-                template: "\n<div data-selector=\"recorder-container\" ba-show=\"{{!player_active}}\"\n     class=\"{{css}}-container {{css}}-size-{{csssize}} {{iecss}}-{{ie8 ? 'ie8' : 'noie8'}} {{csstheme}}\n     \t{{css}}-{{ fullscreened ? 'fullscreen' : 'normal' }}-view {{css}}-{{ firefox ? 'firefox' : 'common'}}-browser\n    \t{{css}}-{{themecolor}}-color\"\n     ba-styles=\"{{widthHeightStyles}}\"\n>\n\n    <video tabindex=\"-1\" data-selector=\"recorder-status\" class=\"{{css}}-video {{css}}-{{hasrecorder ? 'hasrecorder' : 'norecorder'}}\" data-video=\"video\" playsinline></video>\n\t<ba-videorecorder-faceoutline class=\"{{css}}-overlay\" ba-if=\"{{faceoutline && hasrecorder}}\">\n\t</ba-videorecorder-faceoutline>\n    <div data-selector=\"recorder-overlay\" class='{{css}}-overlay' ba-show=\"{{!hideoverlay}}\" data-overlay=\"overlay\">\n\t\t<ba-{{dynloader}}\n\t\t    ba-css=\"{{cssloader || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplloader}}\"\n\t\t    ba-show=\"{{loader_active}}\"\n\t\t    ba-tooltip=\"{{loadertooltip}}\"\n\t\t\tba-hovermessage=\"{{=hovermessage}}\"\n\t\t    ba-label=\"{{loaderlabel}}\"\n\t\t></ba-{{dynloader}}>\n\n\t\t<ba-{{dynmessage}}\n\t\t    ba-css=\"{{cssmessage || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplmessage}}\"\n\t\t    ba-show=\"{{message_active}}\"\n\t\t    ba-message=\"{{message}}\"\n\t\t\tba-links=\"{{message_links}}\"\n\t\t    ba-event:click=\"message_click\"\n\t\t\tba-event:link=\"message_link_click\"\n\t\t></ba-{{dynmessage}}>\n\n\t\t<ba-{{dyntopmessage}}\n\t\t    ba-css=\"{{csstopmessage || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmpltopmessage}}\"\n\t\t    ba-show=\"{{topmessage_active && (topmessage || hovermessage)}}\"\n\t\t    ba-topmessage=\"{{hovermessage || topmessage}}\"\n\t\t></ba-{{dyntopmessage}}>\n\n\t\t<ba-{{dynchooser}}\n\t\t\tba-onlyaudio=\"{{onlyaudio}}\"\n\t\t\tba-recordviafilecapture=\"{{recordviafilecapture}}\"\n\t\t    ba-css=\"{{csschooser || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplchooser}}\"\n\t\t\tba-allowscreen=\"{{allowscreen}}\"\n\t\t    ba-if=\"{{chooser_active && !is_initial_state}}\"\n\t\t    ba-allowrecord=\"{{allowrecord}}\"\n\t\t    ba-allowupload=\"{{allowupload}}\"\n\t\t    ba-allowcustomupload=\"{{allowcustomupload}}\"\n\t\t    ba-allowedextensions=\"{{allowedextensions}}\"\n\t\t    ba-primaryrecord=\"{{primaryrecord}}\"\n\t\t    ba-timelimit=\"{{timelimit}}\"\n\t\t    ba-event:record=\"record_video\"\n\t\t\tba-event:record-screen=\"record_screen\"\n\t\t    ba-event:upload=\"upload_video\"\n\t\t></ba-{{dynchooser}}>\n\n\t\t<ba-{{dynimagegallery}}\n\t\t    ba-css=\"{{cssimagegallery || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplimagegallery}}\"\n\t\t    ba-if=\"{{imagegallery_active}}\"\n\t\t    ba-imagecount=\"{{gallerysnapshots}}\"\n\t\t    ba-imagenativewidth=\"{{nativeRecordingWidth}}\"\n\t\t    ba-imagenativeheight=\"{{nativeRecordingHeight}}\"\n\t\t    ba-event:image-selected=\"select_image\"\n\t\t></ba-{{dynimagegallery}}>\n\n\t\t<ba-{{dyncontrolbar}}\n\t\t    ba-css=\"{{csscontrolbar || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplcontrolbar}}\"\n\t\t    ba-show=\"{{controlbar_active}}\"\n\t\t    ba-cameras=\"{{cameras}}\"\n\t\t    ba-microphones=\"{{microphones}}\"\n\t\t    ba-noaudio=\"{{noaudio}}\"\n\t\t\tba-novideo=\"{{onlyaudio}}\"\n\t\t\tba-allowscreen=\"{{record_media==='screen'}}\"\n\t\t    ba-selectedcamera=\"{{selectedcamera || 0}}\"\n\t\t    ba-selectedmicrophone=\"{{selectedmicrophone || 0}}\"\n\t\t    ba-camerahealthy=\"{{camerahealthy}}\"\n\t\t    ba-microphonehealthy=\"{{microphonehealthy}}\"\n\t\t    ba-hovermessage=\"{{=hovermessage}}\"\n\t\t    ba-settingsvisible=\"{{settingsvisible}}\"\n\t\t    ba-recordvisible=\"{{recordvisible}}\"\n\t\t\tba-cancelvisible=\"{{allowcancel && cancancel}}\"\n\t\t    ba-uploadcovershotvisible=\"{{uploadcovershotvisible}}\"\n\t\t    ba-rerecordvisible=\"{{rerecordvisible}}\"\n\t\t    ba-stopvisible=\"{{stopvisible}}\"\n\t\t    ba-skipvisible=\"{{skipvisible}}\"\n\t\t    ba-controlbarlabel=\"{{controlbarlabel}}\"\n\t\t\tba-mintimeindicator=\"{{mintimeindicator}}\"\n\t\t\tba-timeminlimit=\"{{timeminlimit}}\"\n\t\t    ba-event:select-camera=\"select_camera\"\n\t\t    ba-event:select-microphone=\"select_microphone\"\n\t\t    ba-event:invoke-record=\"record\"\n\t\t    ba-event:invoke-rerecord=\"rerecord\"\n\t\t    ba-event:invoke-stop=\"stop\"\n\t\t    ba-event:invoke-skip=\"invoke_skip\"\n\t\t    ba-event:upload-covershot=\"upload_covershot\"\n\t\t></ba-{{dyncontrolbar}}>\n    </div>\n</div>\n\n<div data-selector=\"recorder-player\" ba-if=\"{{player_active}}\" ba-styles=\"{{widthHeightStyles}}\">\n\t<span ba-show=\"{{ie8}}\">&nbsp;</span>\n\t<ba-{{dynvideoplayer}}\n\t    ba-theme=\"{{theme || 'default'}}\"\n        ba-themecolor=\"{{themecolor}}\"\n        ba-source=\"{{playbacksource}}\"\n        ba-poster=\"{{playbackposter}}\"\n        ba-hideoninactivity=\"{{false}}\"\n        ba-forceflash=\"{{forceflash}}\"\n        ba-noflash=\"{{noflash}}\"\n        ba-stretch=\"{{stretch}}\"\n\t\tba-onlyaudio=\"{{onlyaudio}}\"\n        ba-attrs=\"{{playerattrs}}\"\n        ba-data:id=\"player\"\n        ba-width=\"{{width}}\"\n        ba-height=\"{{height}}\"\n        ba-totalduration=\"{{duration / 1000}}\"\n        ba-rerecordable=\"{{rerecordable && (recordings === null || recordings > 0)}}\"\n        ba-submittable=\"{{manualsubmit && verified}}\"\n        ba-reloadonplay=\"{{true}}\"\n        ba-autoplay=\"{{autoplay}}\"\n        ba-nofullscreen=\"{{nofullscreen}}\"\n        ba-topmessage=\"{{playertopmessage}}\"\n        ba-allowtexttrackupload=\"{{allowtexttrackupload}}\"\n        ba-uploadtexttracksvisible=\"{{uploadtexttracksvisible}}\"\n        ba-tracktags=\"{{tracktags}}\"\n        ba-tracktagsstyled=\"{{tracktagsstyled}}\"\n        ba-trackcuetext=\"{{trackcuetext}}\"\n        ba-acceptedtracktexts=\"{{acceptedtracktexts}}\"\n\t\tba-event:loaded=\"ready_to_play\"\n        ba-event:rerecord=\"rerecord\"\n        ba-event:playing=\"playing\"\n        ba-event:paused=\"paused\"\n        ba-event:ended=\"ended\"\n        ba-event:submit=\"manual_submit\"\n        ba-event:upload-text-tracks=\"upload_text_tracks\"\n\t\tba-tracksshowselection=\"{{tracksshowselection}}\"\n\t\tba-trackselectorhovered=\"{{trackselectorhovered}}\"\n\t\tba-uploadlocales=\"{{uploadlocales}}\"\n\t\tba-event:selected_label_value=\"selected_label_value\"\n\t\tba-event:move_to_option=\"move_to_option\"\n\t>\n\t</ba-{{dynvideoplayer}}>\n</div>\n",
+                template: "\n<div data-selector=\"recorder-container\" ba-show=\"{{!player_active}}\"\n     class=\"{{css}}-container {{css}}-size-{{csssize}} {{iecss}}-{{ie8 ? 'ie8' : 'noie8'}} {{csstheme}}\n     \t{{css}}-{{ fullscreened ? 'fullscreen' : 'normal' }}-view {{css}}-{{ firefox ? 'firefox' : 'common'}}-browser\n    \t{{css}}-{{themecolor}}-color\"\n     ba-styles=\"{{widthHeightStyles}}\"\n>\n\n    <video tabindex=\"-1\" data-selector=\"recorder-status\" class=\"{{css}}-video {{css}}-{{hasrecorder ? 'hasrecorder' : 'norecorder'}}\" data-video=\"video\" playsinline></video>\n\t<ba-recorderfaceoutline class=\"{{css}}-overlay\" ba-if=\"{{faceoutline && hasrecorder}}\">\n\t</ba-recorderfaceoutline>\n    <div data-selector=\"recorder-overlay\" class='{{css}}-overlay' ba-show=\"{{!hideoverlay}}\" data-overlay=\"overlay\">\n\t\t<ba-{{dynloader}}\n\t\t    ba-css=\"{{cssloader || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplloader}}\"\n\t\t    ba-show=\"{{loader_active}}\"\n\t\t    ba-tooltip=\"{{loadertooltip}}\"\n\t\t\tba-hovermessage=\"{{=hovermessage}}\"\n\t\t    ba-label=\"{{loaderlabel}}\"\n\t\t></ba-{{dynloader}}>\n\n\t\t<ba-{{dynmessage}}\n\t\t    ba-css=\"{{cssmessage || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplmessage}}\"\n\t\t    ba-show=\"{{message_active}}\"\n\t\t    ba-message=\"{{message}}\"\n        ba-message_uploading=\"{{message_uploading}}\"\n\t\t\tba-links=\"{{message_links}}\"\n\t\t    ba-event:click=\"message_click\"\n\t\t\tba-event:link=\"message_link_click\"\n\t\t></ba-{{dynmessage}}>\n\n\t\t<ba-{{dyntopmessage}}\n\t\t    ba-css=\"{{csstopmessage || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmpltopmessage}}\"\n\t\t    ba-show=\"{{topmessage_active && (topmessage || hovermessage)}}\"\n\t\t    ba-topmessage=\"{{hovermessage || topmessage}}\"\n\t\t></ba-{{dyntopmessage}}>\n\n\t\t<ba-{{dynchooser}}\n\t\t\tba-onlyaudio=\"{{onlyaudio}}\"\n\t\t\tba-recordviafilecapture=\"{{recordviafilecapture}}\"\n\t\t    ba-css=\"{{csschooser || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplchooser}}\"\n\t\t\tba-allowscreen=\"{{allowscreen}}\"\n\t\t    ba-if=\"{{chooser_active && !is_initial_state}}\"\n\t\t    ba-allowrecord=\"{{allowrecord}}\"\n\t\t    ba-allowupload=\"{{allowupload}}\"\n\t\t    ba-allowcustomupload=\"{{allowcustomupload}}\"\n\t\t    ba-allowedextensions=\"{{allowedextensions}}\"\n\t\t    ba-primaryrecord=\"{{primaryrecord}}\"\n\t\t    ba-timelimit=\"{{timelimit}}\"\n\t\t    ba-event:record=\"record_video\"\n\t\t\tba-event:record-screen=\"record_screen\"\n\t\t    ba-event:upload=\"video_file_selected\"\n\t\t></ba-{{dynchooser}}>\n\n\t\t<ba-{{dynimagegallery}}\n\t\t    ba-css=\"{{cssimagegallery || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplimagegallery}}\"\n\t\t    ba-if=\"{{imagegallery_active}}\"\n        ba-snapshotindex={{snapshotindex}}\n        ba-selectedindex={{selectedindex}}\n\t\t    ba-imagecount=\"{{gallerysnapshots}}\"\n\t\t    ba-imagenativewidth=\"{{nativeRecordingWidth}}\"\n\t\t    ba-imagenativeheight=\"{{nativeRecordingHeight}}\"\n\t\t    ba-event:image-selected=\"select_image\"\n        ba-event:image-hovered=\"hover_image\"\n\t\t></ba-{{dynimagegallery}}>\n\n\t\t<ba-{{dyncontrolbar}}\n\t\t    ba-css=\"{{csscontrolbar || css}}\"\n\t\t\tba-themecolor=\"{{themecolor}}\"\n\t\t    ba-template=\"{{tmplcontrolbar}}\"\n\t\t    ba-show=\"{{controlbar_active}}\"\n\t\t    ba-cameras=\"{{cameras}}\"\n\t\t    ba-microphones=\"{{microphones}}\"\n\t\t    ba-noaudio=\"{{noaudio}}\"\n\t\t\tba-novideo=\"{{onlyaudio}}\"\n\t\t\tba-allowscreen=\"{{record_media==='screen'}}\"\n\t\t    ba-selectedcamera=\"{{selectedcamera || 0}}\"\n\t\t    ba-selectedmicrophone=\"{{selectedmicrophone || 0}}\"\n\t\t    ba-camerahealthy=\"{{camerahealthy}}\"\n\t\t    ba-microphonehealthy=\"{{microphonehealthy}}\"\n\t\t    ba-hovermessage=\"{{=hovermessage}}\"\n\t\t    ba-settingsvisible=\"{{settingsvisible}}\"\n\t\t    ba-recordvisible=\"{{recordvisible}}\"\n\t\t\tba-cancelvisible=\"{{allowcancel && cancancel}}\"\n\t\t    ba-uploadcovershotvisible=\"{{uploadcovershotvisible}}\"\n\t\t    ba-rerecordvisible=\"{{rerecordvisible}}\"\n\t\t    ba-stopvisible=\"{{stopvisible}}\"\n\t\t    ba-skipvisible=\"{{skipvisible}}\"\n\t\t    ba-controlbarlabel=\"{{controlbarlabel}}\"\n\t\t\tba-mintimeindicator=\"{{mintimeindicator}}\"\n\t\t\tba-timeminlimit=\"{{timeminlimit}}\"\n\t\t    ba-event:select-camera=\"select_camera\"\n\t\t    ba-event:select-microphone=\"select_microphone\"\n\t\t    ba-event:invoke-record=\"record\"\n\t\t    ba-event:invoke-rerecord=\"rerecord\"\n\t\t    ba-event:invoke-stop=\"stop\"\n\t\t    ba-event:invoke-skip=\"invoke_skip\"\n\t\t    ba-event:upload-covershot=\"upload_covershot\"\n\t\t></ba-{{dyncontrolbar}}>\n    </div>\n</div>\n\n<div data-selector=\"recorder-player\" ba-if=\"{{player_active}}\" ba-styles=\"{{widthHeightStyles}}\">\n\t<span ba-show=\"{{ie8}}\">&nbsp;</span>\n\t<ba-{{dynvideoplayer}}\n\t    ba-theme=\"{{theme || 'default'}}\"\n        ba-themecolor=\"{{themecolor}}\"\n        ba-source=\"{{playbacksource}}\"\n        ba-poster=\"{{playbackposter}}\"\n        ba-hideoninactivity=\"{{false}}\"\n        ba-forceflash=\"{{forceflash}}\"\n        ba-noflash=\"{{noflash}}\"\n        ba-stretch=\"{{stretch}}\"\n\t\tba-onlyaudio=\"{{onlyaudio}}\"\n        ba-attrs=\"{{playerattrs}}\"\n        ba-data:id=\"player\"\n        ba-width=\"{{width}}\"\n        ba-height=\"{{height}}\"\n        ba-totalduration=\"{{duration / 1000}}\"\n        ba-rerecordable=\"{{rerecordable && (recordings === null || recordings > 0)}}\"\n        ba-submittable=\"{{manualsubmit && verified}}\"\n        ba-reloadonplay=\"{{true}}\"\n        ba-autoplay=\"{{autoplay}}\"\n        ba-nofullscreen=\"{{nofullscreen}}\"\n        ba-topmessage=\"{{playertopmessage}}\"\n        ba-allowtexttrackupload=\"{{allowtexttrackupload}}\"\n        ba-uploadtexttracksvisible=\"{{uploadtexttracksvisible}}\"\n        ba-tracktags=\"{{tracktags}}\"\n        ba-tracktagsstyled=\"{{tracktagsstyled}}\"\n        ba-trackcuetext=\"{{trackcuetext}}\"\n        ba-acceptedtracktexts=\"{{acceptedtracktexts}}\"\n\t\tba-event:loaded=\"ready_to_play\"\n        ba-event:rerecord=\"rerecord\"\n        ba-event:playing=\"playing\"\n        ba-event:paused=\"paused\"\n        ba-event:ended=\"ended\"\n        ba-event:submit=\"manual_submit\"\n        ba-event:upload-text-tracks=\"upload_text_tracks\"\n\t\tba-tracksshowselection=\"{{tracksshowselection}}\"\n\t\tba-trackselectorhovered=\"{{trackselectorhovered}}\"\n\t\tba-uploadlocales=\"{{uploadlocales}}\"\n\t\tba-event:selected_label_value=\"selected_label_value\"\n\t\tba-event:move_to_option=\"move_to_option\"\n\t>\n\t</ba-{{dynvideoplayer}}>\n</div>\n",
 
                 attrs: {
                     /* CSS */
@@ -30575,7 +30648,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                     "csschooser": "",
                     "width": "",
                     "height": "",
-                    "gallerysnapshots": 3,
+                    "gallerysnapshots": 5,
 
                     /* Themes */
                     "theme": "",
@@ -30604,6 +30677,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                     "allowrecord": true,
                     "allowupload": true,
                     "allowcustomupload": true,
+                    "manual-upload": false,
                     "camerafacefront": false,
                     "primaryrecord": true,
                     "allowscreen": false,
@@ -30614,6 +30688,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                     "maxuploadingwidth": undefined,
                     "minuploadingheight": undefined,
                     "maxuploadingheight": undefined,
+                    "message_uploading": false,
                     "countdown": 3,
                     "snapshotmax": 15,
                     "framerate-warning": null,
@@ -30727,6 +30802,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                     "enforce-duration": "bool",
                     "webrtcstreaming": "boolean",
                     "webrtconmobile": "boolean",
+                    "manual-upload": "boolean",
                     "webrtcstreamingifnecessary": "boolean",
                     "microphone-volume": "float",
                     "audiobitrate": "int",
@@ -30748,7 +30824,8 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                     "display-timer": "boolean",
                     "audio-test-mandatory": "boolean",
                     "allowtexttrackupload": "boolean",
-                    "uploadlocales": "array"
+                    "uploadlocales": "array",
+                    "message_uploading": "bool"
                 },
 
                 extendables: ["states"],
@@ -30937,6 +31014,8 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                                 this.set("selectedmicrophone", selected.audio);
                                 this.set("cameras", new Collection(Objs.values(devices.video)));
                                 this.set("microphones", new Collection(Objs.values(devices.audio)));
+                                this.trigger(Types.is_empty(devices.video) ? "no_camera" : "has_camera");
+                                this.trigger(Types.is_empty(devices.audio) ? "no_microphone" : "has_microphone");
                             }, this);
                             if (!this.get("noaudio"))
                                 this.recorder.testSoundLevel(true);
@@ -31054,7 +31133,11 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                     if (this.get("onlyaudio"))
                         return;
                     this._hideBackgroundSnapshot();
-                    this.__backgroundSnapshot = this.recorder.createSnapshot(this.get("snapshottype"));
+                    this._displayBackgroundSnapshot(this.recorder.createSnapshot(this.get("snapshottype")));
+                },
+
+                _displayBackgroundSnapshot: function(snapshot) {
+                    this.__backgroundSnapshot = snapshot;
                     var el = this.activeElement().querySelector("[data-video]");
                     var dimensions = Dom.elementDimensions(el);
                     this.__backgroundSnapshotDisplay = this.recorder.createSnapshotDisplay(el, this.__backgroundSnapshot, 0, 0, dimensions.width, dimensions.height);
@@ -31092,8 +31175,14 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
                         this.host.state().selectRecordScreen();
                     },
 
+                    video_file_selected: function(file) {
+                        this.__selected_video_file = file;
+                        if (!this.get("manual-upload"))
+                            this.execute("upload_video");
+                    },
+
                     upload_video: function(file) {
-                        this.host.state().selectUpload(file);
+                        this.host.state().selectUpload(file || this.__selected_video_file);
                     },
 
                     upload_covershot: function(file) {
@@ -31133,6 +31222,10 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
 
                     select_image: function(image) {
                         this.trigger("select-image", image);
+                    },
+
+                    hover_image: function(snapshot) {
+                        this.trigger("hover-image", snapshot);
                     },
 
                     rerecord: function() {
@@ -31337,7 +31430,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
 
         })
         .register("ba-videorecorder")
-        .registerFunctions({ /**/"!player_active": function (obj) { with (obj) { return !player_active; } }, "css": function (obj) { with (obj) { return css; } }, "csssize": function (obj) { with (obj) { return csssize; } }, "iecss": function (obj) { with (obj) { return iecss; } }, "ie8 ? 'ie8' : 'noie8'": function (obj) { with (obj) { return ie8 ? 'ie8' : 'noie8'; } }, "csstheme": function (obj) { with (obj) { return csstheme; } }, "fullscreened ? 'fullscreen' : 'normal'": function (obj) { with (obj) { return fullscreened ? 'fullscreen' : 'normal'; } }, "firefox ? 'firefox' : 'common'": function (obj) { with (obj) { return firefox ? 'firefox' : 'common'; } }, "themecolor": function (obj) { with (obj) { return themecolor; } }, "widthHeightStyles": function (obj) { with (obj) { return widthHeightStyles; } }, "hasrecorder ? 'hasrecorder' : 'norecorder'": function (obj) { with (obj) { return hasrecorder ? 'hasrecorder' : 'norecorder'; } }, "faceoutline && hasrecorder": function (obj) { with (obj) { return faceoutline && hasrecorder; } }, "!hideoverlay": function (obj) { with (obj) { return !hideoverlay; } }, "dynloader": function (obj) { with (obj) { return dynloader; } }, "cssloader || css": function (obj) { with (obj) { return cssloader || css; } }, "tmplloader": function (obj) { with (obj) { return tmplloader; } }, "loader_active": function (obj) { with (obj) { return loader_active; } }, "loadertooltip": function (obj) { with (obj) { return loadertooltip; } }, "hovermessage": function (obj) { with (obj) { return hovermessage; } }, "loaderlabel": function (obj) { with (obj) { return loaderlabel; } }, "dynmessage": function (obj) { with (obj) { return dynmessage; } }, "cssmessage || css": function (obj) { with (obj) { return cssmessage || css; } }, "tmplmessage": function (obj) { with (obj) { return tmplmessage; } }, "message_active": function (obj) { with (obj) { return message_active; } }, "message": function (obj) { with (obj) { return message; } }, "message_links": function (obj) { with (obj) { return message_links; } }, "dyntopmessage": function (obj) { with (obj) { return dyntopmessage; } }, "csstopmessage || css": function (obj) { with (obj) { return csstopmessage || css; } }, "tmpltopmessage": function (obj) { with (obj) { return tmpltopmessage; } }, "topmessage_active && (topmessage || hovermessage)": function (obj) { with (obj) { return topmessage_active && (topmessage || hovermessage); } }, "hovermessage || topmessage": function (obj) { with (obj) { return hovermessage || topmessage; } }, "dynchooser": function (obj) { with (obj) { return dynchooser; } }, "onlyaudio": function (obj) { with (obj) { return onlyaudio; } }, "recordviafilecapture": function (obj) { with (obj) { return recordviafilecapture; } }, "csschooser || css": function (obj) { with (obj) { return csschooser || css; } }, "tmplchooser": function (obj) { with (obj) { return tmplchooser; } }, "allowscreen": function (obj) { with (obj) { return allowscreen; } }, "chooser_active && !is_initial_state": function (obj) { with (obj) { return chooser_active && !is_initial_state; } }, "allowrecord": function (obj) { with (obj) { return allowrecord; } }, "allowupload": function (obj) { with (obj) { return allowupload; } }, "allowcustomupload": function (obj) { with (obj) { return allowcustomupload; } }, "allowedextensions": function (obj) { with (obj) { return allowedextensions; } }, "primaryrecord": function (obj) { with (obj) { return primaryrecord; } }, "timelimit": function (obj) { with (obj) { return timelimit; } }, "dynimagegallery": function (obj) { with (obj) { return dynimagegallery; } }, "cssimagegallery || css": function (obj) { with (obj) { return cssimagegallery || css; } }, "tmplimagegallery": function (obj) { with (obj) { return tmplimagegallery; } }, "imagegallery_active": function (obj) { with (obj) { return imagegallery_active; } }, "gallerysnapshots": function (obj) { with (obj) { return gallerysnapshots; } }, "nativeRecordingWidth": function (obj) { with (obj) { return nativeRecordingWidth; } }, "nativeRecordingHeight": function (obj) { with (obj) { return nativeRecordingHeight; } }, "dyncontrolbar": function (obj) { with (obj) { return dyncontrolbar; } }, "csscontrolbar || css": function (obj) { with (obj) { return csscontrolbar || css; } }, "tmplcontrolbar": function (obj) { with (obj) { return tmplcontrolbar; } }, "controlbar_active": function (obj) { with (obj) { return controlbar_active; } }, "cameras": function (obj) { with (obj) { return cameras; } }, "microphones": function (obj) { with (obj) { return microphones; } }, "noaudio": function (obj) { with (obj) { return noaudio; } }, "record_media==='screen'": function (obj) { with (obj) { return record_media==='screen'; } }, "selectedcamera || 0": function (obj) { with (obj) { return selectedcamera || 0; } }, "selectedmicrophone || 0": function (obj) { with (obj) { return selectedmicrophone || 0; } }, "camerahealthy": function (obj) { with (obj) { return camerahealthy; } }, "microphonehealthy": function (obj) { with (obj) { return microphonehealthy; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "allowcancel && cancancel": function (obj) { with (obj) { return allowcancel && cancancel; } }, "uploadcovershotvisible": function (obj) { with (obj) { return uploadcovershotvisible; } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "stopvisible": function (obj) { with (obj) { return stopvisible; } }, "skipvisible": function (obj) { with (obj) { return skipvisible; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "mintimeindicator": function (obj) { with (obj) { return mintimeindicator; } }, "timeminlimit": function (obj) { with (obj) { return timeminlimit; } }, "player_active": function (obj) { with (obj) { return player_active; } }, "ie8": function (obj) { with (obj) { return ie8; } }, "dynvideoplayer": function (obj) { with (obj) { return dynvideoplayer; } }, "theme || 'default'": function (obj) { with (obj) { return theme || 'default'; } }, "playbacksource": function (obj) { with (obj) { return playbacksource; } }, "playbackposter": function (obj) { with (obj) { return playbackposter; } }, "false": function (obj) { with (obj) { return false; } }, "forceflash": function (obj) { with (obj) { return forceflash; } }, "noflash": function (obj) { with (obj) { return noflash; } }, "stretch": function (obj) { with (obj) { return stretch; } }, "playerattrs": function (obj) { with (obj) { return playerattrs; } }, "width": function (obj) { with (obj) { return width; } }, "height": function (obj) { with (obj) { return height; } }, "duration / 1000": function (obj) { with (obj) { return duration / 1000; } }, "rerecordable && (recordings === null || recordings > 0)": function (obj) { with (obj) { return rerecordable && (recordings === null || recordings > 0); } }, "manualsubmit && verified": function (obj) { with (obj) { return manualsubmit && verified; } }, "true": function (obj) { with (obj) { return true; } }, "autoplay": function (obj) { with (obj) { return autoplay; } }, "nofullscreen": function (obj) { with (obj) { return nofullscreen; } }, "playertopmessage": function (obj) { with (obj) { return playertopmessage; } }, "allowtexttrackupload": function (obj) { with (obj) { return allowtexttrackupload; } }, "uploadtexttracksvisible": function (obj) { with (obj) { return uploadtexttracksvisible; } }, "tracktags": function (obj) { with (obj) { return tracktags; } }, "tracktagsstyled": function (obj) { with (obj) { return tracktagsstyled; } }, "trackcuetext": function (obj) { with (obj) { return trackcuetext; } }, "acceptedtracktexts": function (obj) { with (obj) { return acceptedtracktexts; } }, "tracksshowselection": function (obj) { with (obj) { return tracksshowselection; } }, "trackselectorhovered": function (obj) { with (obj) { return trackselectorhovered; } }, "uploadlocales": function (obj) { with (obj) { return uploadlocales; } }/**/ })
+        .registerFunctions({ /**/"!player_active": function (obj) { with (obj) { return !player_active; } }, "css": function (obj) { with (obj) { return css; } }, "csssize": function (obj) { with (obj) { return csssize; } }, "iecss": function (obj) { with (obj) { return iecss; } }, "ie8 ? 'ie8' : 'noie8'": function (obj) { with (obj) { return ie8 ? 'ie8' : 'noie8'; } }, "csstheme": function (obj) { with (obj) { return csstheme; } }, "fullscreened ? 'fullscreen' : 'normal'": function (obj) { with (obj) { return fullscreened ? 'fullscreen' : 'normal'; } }, "firefox ? 'firefox' : 'common'": function (obj) { with (obj) { return firefox ? 'firefox' : 'common'; } }, "themecolor": function (obj) { with (obj) { return themecolor; } }, "widthHeightStyles": function (obj) { with (obj) { return widthHeightStyles; } }, "hasrecorder ? 'hasrecorder' : 'norecorder'": function (obj) { with (obj) { return hasrecorder ? 'hasrecorder' : 'norecorder'; } }, "faceoutline && hasrecorder": function (obj) { with (obj) { return faceoutline && hasrecorder; } }, "!hideoverlay": function (obj) { with (obj) { return !hideoverlay; } }, "dynloader": function (obj) { with (obj) { return dynloader; } }, "cssloader || css": function (obj) { with (obj) { return cssloader || css; } }, "tmplloader": function (obj) { with (obj) { return tmplloader; } }, "loader_active": function (obj) { with (obj) { return loader_active; } }, "loadertooltip": function (obj) { with (obj) { return loadertooltip; } }, "hovermessage": function (obj) { with (obj) { return hovermessage; } }, "loaderlabel": function (obj) { with (obj) { return loaderlabel; } }, "dynmessage": function (obj) { with (obj) { return dynmessage; } }, "cssmessage || css": function (obj) { with (obj) { return cssmessage || css; } }, "tmplmessage": function (obj) { with (obj) { return tmplmessage; } }, "message_active": function (obj) { with (obj) { return message_active; } }, "message": function (obj) { with (obj) { return message; } }, "message_uploading": function (obj) { with (obj) { return message_uploading; } }, "message_links": function (obj) { with (obj) { return message_links; } }, "dyntopmessage": function (obj) { with (obj) { return dyntopmessage; } }, "csstopmessage || css": function (obj) { with (obj) { return csstopmessage || css; } }, "tmpltopmessage": function (obj) { with (obj) { return tmpltopmessage; } }, "topmessage_active && (topmessage || hovermessage)": function (obj) { with (obj) { return topmessage_active && (topmessage || hovermessage); } }, "hovermessage || topmessage": function (obj) { with (obj) { return hovermessage || topmessage; } }, "dynchooser": function (obj) { with (obj) { return dynchooser; } }, "onlyaudio": function (obj) { with (obj) { return onlyaudio; } }, "recordviafilecapture": function (obj) { with (obj) { return recordviafilecapture; } }, "csschooser || css": function (obj) { with (obj) { return csschooser || css; } }, "tmplchooser": function (obj) { with (obj) { return tmplchooser; } }, "allowscreen": function (obj) { with (obj) { return allowscreen; } }, "chooser_active && !is_initial_state": function (obj) { with (obj) { return chooser_active && !is_initial_state; } }, "allowrecord": function (obj) { with (obj) { return allowrecord; } }, "allowupload": function (obj) { with (obj) { return allowupload; } }, "allowcustomupload": function (obj) { with (obj) { return allowcustomupload; } }, "allowedextensions": function (obj) { with (obj) { return allowedextensions; } }, "primaryrecord": function (obj) { with (obj) { return primaryrecord; } }, "timelimit": function (obj) { with (obj) { return timelimit; } }, "dynimagegallery": function (obj) { with (obj) { return dynimagegallery; } }, "cssimagegallery || css": function (obj) { with (obj) { return cssimagegallery || css; } }, "tmplimagegallery": function (obj) { with (obj) { return tmplimagegallery; } }, "imagegallery_active": function (obj) { with (obj) { return imagegallery_active; } }, "snapshotindex": function (obj) { with (obj) { return snapshotindex; } }, "selectedindex": function (obj) { with (obj) { return selectedindex; } }, "gallerysnapshots": function (obj) { with (obj) { return gallerysnapshots; } }, "nativeRecordingWidth": function (obj) { with (obj) { return nativeRecordingWidth; } }, "nativeRecordingHeight": function (obj) { with (obj) { return nativeRecordingHeight; } }, "dyncontrolbar": function (obj) { with (obj) { return dyncontrolbar; } }, "csscontrolbar || css": function (obj) { with (obj) { return csscontrolbar || css; } }, "tmplcontrolbar": function (obj) { with (obj) { return tmplcontrolbar; } }, "controlbar_active": function (obj) { with (obj) { return controlbar_active; } }, "cameras": function (obj) { with (obj) { return cameras; } }, "microphones": function (obj) { with (obj) { return microphones; } }, "noaudio": function (obj) { with (obj) { return noaudio; } }, "record_media==='screen'": function (obj) { with (obj) { return record_media==='screen'; } }, "selectedcamera || 0": function (obj) { with (obj) { return selectedcamera || 0; } }, "selectedmicrophone || 0": function (obj) { with (obj) { return selectedmicrophone || 0; } }, "camerahealthy": function (obj) { with (obj) { return camerahealthy; } }, "microphonehealthy": function (obj) { with (obj) { return microphonehealthy; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "allowcancel && cancancel": function (obj) { with (obj) { return allowcancel && cancancel; } }, "uploadcovershotvisible": function (obj) { with (obj) { return uploadcovershotvisible; } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "stopvisible": function (obj) { with (obj) { return stopvisible; } }, "skipvisible": function (obj) { with (obj) { return skipvisible; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "mintimeindicator": function (obj) { with (obj) { return mintimeindicator; } }, "timeminlimit": function (obj) { with (obj) { return timeminlimit; } }, "player_active": function (obj) { with (obj) { return player_active; } }, "ie8": function (obj) { with (obj) { return ie8; } }, "dynvideoplayer": function (obj) { with (obj) { return dynvideoplayer; } }, "theme || 'default'": function (obj) { with (obj) { return theme || 'default'; } }, "playbacksource": function (obj) { with (obj) { return playbacksource; } }, "playbackposter": function (obj) { with (obj) { return playbackposter; } }, "false": function (obj) { with (obj) { return false; } }, "forceflash": function (obj) { with (obj) { return forceflash; } }, "noflash": function (obj) { with (obj) { return noflash; } }, "stretch": function (obj) { with (obj) { return stretch; } }, "playerattrs": function (obj) { with (obj) { return playerattrs; } }, "width": function (obj) { with (obj) { return width; } }, "height": function (obj) { with (obj) { return height; } }, "duration / 1000": function (obj) { with (obj) { return duration / 1000; } }, "rerecordable && (recordings === null || recordings > 0)": function (obj) { with (obj) { return rerecordable && (recordings === null || recordings > 0); } }, "manualsubmit && verified": function (obj) { with (obj) { return manualsubmit && verified; } }, "true": function (obj) { with (obj) { return true; } }, "autoplay": function (obj) { with (obj) { return autoplay; } }, "nofullscreen": function (obj) { with (obj) { return nofullscreen; } }, "playertopmessage": function (obj) { with (obj) { return playertopmessage; } }, "allowtexttrackupload": function (obj) { with (obj) { return allowtexttrackupload; } }, "uploadtexttracksvisible": function (obj) { with (obj) { return uploadtexttracksvisible; } }, "tracktags": function (obj) { with (obj) { return tracktags; } }, "tracktagsstyled": function (obj) { with (obj) { return tracktagsstyled; } }, "trackcuetext": function (obj) { with (obj) { return trackcuetext; } }, "acceptedtracktexts": function (obj) { with (obj) { return acceptedtracktexts; } }, "tracksshowselection": function (obj) { with (obj) { return tracksshowselection; } }, "trackselectorhovered": function (obj) { with (obj) { return trackselectorhovered; } }, "uploadlocales": function (obj) { with (obj) { return uploadlocales; } }/**/ })
         .attachStringTable(Assets.strings)
         .addStrings({
             "recorder-error": "An error occurred, please try again later. Click to retry.",
@@ -31347,7 +31440,7 @@ Scoped.define("module:VideoRecorder.Dynamics.Recorder", ["dynamics:Dynamic","mod
             "access-forbidden": "Access to the media was forbidden. Click to retry.",
             "pick-covershot": "Pick a covershot.",
             "framerate-warning": "The video frame rate is very low. We recommend closing all other programs and browser tabs or to use a faster computer.",
-            "uploading": "Uploading",
+            "uploading": "Uploading video",
             "uploading-failed": "Uploading failed - click here to retry.",
             "upload-error-duration": "Length of the uploaded video does not meet the requirements - click here to retry.",
             "resolution-constraint-error": "The file you've selected does not match the required resolution - click here to retry.",
@@ -31848,868 +31941,6 @@ Scoped.define("module:ImageViewer.Dynamics.ImageViewer", ["dynamics:Dynamic","mo
         .addStrings({
             "image-error": "An error occurred, please try again later. Click to retry."
         });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.State", ["base:States.State","base:Events.ListenMixin","base:Objs"], function (State, ListenMixin, Objs, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, [ListenMixin, {
-
-        dynamics: [],
-
-        _start: function() {
-            this.dyn = this.host.dynamic;
-            Objs.iter(Objs.extend({
-                "message": false,
-                "chooser": false,
-                "topmessage": false,
-                "controlbar": false,
-                "loader": false
-            }, Objs.objectify(this.dynamics)), function(value, key) {
-                this.dyn.set(key + "_active", value);
-            }, this);
-            this.dyn.set("playertopmessage", "");
-            this.dyn.set("message_links", null);
-            this.dyn._accessing_camera = false;
-            this._started();
-        },
-
-        _started: function() {},
-
-        record: function() {
-            this.dyn.set("autorecord", true);
-        },
-
-        rerecord: function() {},
-
-        selectRecord: function() {},
-
-        selectUpload: function(file) {}
-
-    }]);
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.FatalError", ["module:ImageCapture.Dynamics.RecorderStates.State","browser:Info","base:Timers.Timer"], function (State, Info, Timer, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["message"],
-        _locals: ["message", "retry"],
-
-        _started: function() {
-            this.dyn.set("message", this._message || this.dyn.string("recorder-error"));
-            this.dyn.set("shortMessage", this.dyn.get("message").length < 30);
-            this.listenOn(this.dyn, "message-click", function() {
-                if (this._retry)
-                    this.next(this._retry);
-            });
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.Initial", ["module:ImageCapture.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        _started: function() {
-            this.dyn.set("is_initial_state", true);
-            this.dyn.set("verified", false);
-            this.dyn.set("playbacksource", null);
-            this.dyn.set("player_active", false);
-            this.dyn._imageFileName = null;
-            this.dyn._imageFile = null;
-            this.dyn._imageFilePlaybackable = false;
-            this.dyn._initializeUploader();
-            if (!this.dyn.get("recordermode")) {
-                if (!this.dyn.get("image")) {
-                    console.warn("recordermode:false requires an existing video to be present and provided.");
-                    this.dyn.set("recordermode", true);
-                } else
-                    this.next("Player");
-            } else if (this.dyn.get("autorecord") || this.dyn.get("skipinitial"))
-                this.eventualNext("RequiredSoftwareCheck");
-            else
-                this.next("Chooser");
-        },
-
-        _end: function() {
-            this.dyn.set("is_initial_state", false);
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.Player", ["module:ImageCapture.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        rerecord: function() {
-            this.dyn.trigger("rerecord");
-            this.dyn.set("recordermode", true);
-            this.next("Initial");
-        },
-
-        _started: function() {
-            this.dyn.set("player_active", true);
-        },
-
-        _end: function() {
-            this.dyn.set("player_active", false);
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.Chooser", ["module:ImageCapture.Dynamics.RecorderStates.State","base:Strings","browser:Info","media:Player.Support"], function (State, Strings, Info, PlayerSupport, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["chooser"],
-
-        _started: function() {
-            this.listenOn(this.dyn, "change:orientation change:currentorientation", function() {
-                var orientation = this.dyn.get("orientation");
-                var currentorientation = this.dyn.get("currentorientation");
-                var result = orientation && orientation !== currentorientation;
-                if (result)
-                    this.dyn.set("message", this.dyn.string("orientation-" + orientation + "-required"));
-                this.dyn.set("message_active", result);
-                this.dyn.set("chooser_active", !result);
-            }, this, {
-                initcall: true
-            });
-        },
-
-        record: function() {
-            this.dyn.set("autorecord", true);
-            this.selectRecord();
-        },
-
-        selectRecord: function() {
-            this.dyn.set("record_media", "camera");
-            this.next("RequiredSoftwareCheck");
-        },
-
-        selectUpload: function(file) {
-            if (!(Info.isMobile() && Info.isAndroid() && Info.isCordova())) {
-                if (this.dyn.get("allowedextensions")) {
-                    var filename = (file.files[0].name || "").toLowerCase();
-                    var found = false;
-                    this.dyn.get("allowedextensions").forEach(function(extension) {
-                        if (Strings.ends_with(filename, "." + extension.toLowerCase()))
-                            found = true;
-                    }, this);
-                    if (!found) {
-                        this.next("FatalError", {
-                            message: this.dyn.string("unsupported_image_type").replace("%s", this.dyn.get("allowedextensions").join(" / ")),
-                            retry: "Chooser"
-                        });
-                        return;
-                    }
-                }
-                if (this.dyn.get("filesizelimit") && file.files && file.files.length > 0 && file.files[0].size && file.files[0].size > this.dyn.get("filesizelimit")) {
-                    var fact = "KB";
-                    var size = Math.round(file.files[0].size / 1000);
-                    var limit = Math.round(this.dyn.get("filesizelimit") / 1000);
-                    if (size > 999) {
-                        fact = "MB";
-                        size = Math.round(size / 1000);
-                        limit = Math.round(limit / 1000);
-                    }
-                    this.next("FatalError", {
-                        message: this.dyn.string("image_file_too_large").replace("%s", size + fact + " / " + limit + fact),
-                        retry: "Chooser"
-                    });
-                    return;
-                }
-            }
-            try {
-                PlayerSupport.imageFileInfo(file.files[0]).success(function(data) {
-                    if ((data.width && this.dyn.get("minuploadingwidth") && this.dyn.get("minuploadingwidth") > data.width) ||
-                        (data.width && this.dyn.get("maxuploadingwidth") && this.dyn.get("maxuploadingwidth") < data.width) ||
-                        (data.height && this.dyn.get("minuploadingheight") && this.dyn.get("minuploadingheight") > data.height) ||
-                        (data.height && this.dyn.get("maxuploadingheight") && this.dyn.get("maxuploadingheight") < data.height)) {
-                        this.next("FatalError", {
-                            message: this.dyn.string("resolution-constraint-error"),
-                            retry: "Chooser"
-                        });
-                        return;
-                    }
-                    this.dyn._imageFilePlaybackable = true;
-                    this._uploadFile(file);
-                }, this).error(function() {
-                    this._uploadFile(file);
-                }, this);
-            } catch (e) {
-                this._uploadFile(file);
-            }
-        },
-
-        _uploadFile: function(file) {
-            this.dyn.set("creation-type", Info.isMobile() ? "mobile" : "upload");
-            try {
-                this.dyn._imageFileName = file.files[0].name;
-                this.dyn._imageFile = file.files[0];
-            } catch (e) {}
-            this.dyn._prepareRecording().success(function() {
-                this.dyn.trigger("upload_selected", file);
-                this.dyn._uploadImageFile(file);
-                this.next("Uploading");
-            }, this).error(function(s) {
-                this.next("FatalError", {
-                    message: s,
-                    retry: "Chooser"
-                });
-            }, this);
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.RequiredSoftwareCheck", ["module:ImageCapture.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader"],
-
-        _started: function() {
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.set("loaderlabel", "");
-            this.listenOn(this.dyn, "error", function(s) {
-                this.next("FatalError", {
-                    message: this.dyn.string("attach-error"),
-                    retry: "Initial"
-                });
-            }, this);
-            this.dyn._attachRecorder();
-            if (this.dyn) {
-                this.dyn.on("message-link-click", function(link) {
-                    link.execute();
-                    this.next("RequiredSoftwareWait");
-                }, this);
-                this.dyn._softwareDependencies().error(function(dependencies) {
-                    this.dyn.set("message_links", dependencies);
-                    this.dyn.set("loader_active", false);
-                    this.dyn.set("message_active", true);
-                    this.dyn.set("message", this.dyn.string("software-required"));
-                }, this).success(function() {
-                    this.next("CameraAccess");
-                }, this);
-            }
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.RequiredSoftwareWait", ["module:ImageCapture.Dynamics.RecorderStates.State","base:Promise","browser:Dom"], function (State, Promise, Dom, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["message"],
-
-        _started: function() {
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.set("loaderlabel", "");
-            this.dyn.set("message", this.dyn.string("software-waiting"));
-            Promise.resilience(function() {
-                if (Dom.isTabHidden())
-                    return Promise.error("Not ready");
-                return this.dyn._softwareDependencies();
-            }, this, 120, [], 1000).success(function() {
-                this.next("CameraAccess");
-            }, this).error(function() {
-                this.next("RequiredSoftwareCheck");
-            }, this);
-            this.dyn.on("message-click", function() {
-                this.next("RequiredSoftwareCheck");
-            }, this);
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.CameraAccess", ["module:ImageCapture.Dynamics.RecorderStates.State","base:Timers.Timer"], function (State, Timer, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader"],
-
-        _started: function() {
-            this.dyn.set("settingsvisible", true);
-            this.dyn.set("recordvisible", true);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.set("loaderlabel", "");
-            this.listenOn(this.dyn, "bound", function() {
-                this.dyn.set("creation-type", this.dyn.isFlash() ? "flash" : "webrtc");
-                var timer = this.auto_destroy(new Timer({
-                    start: true,
-                    delay: 100,
-                    context: this,
-                    fire: function() {
-                        if (this.dyn.blankLevel() >= 0.01 && this.dyn.deltaCoefficient() >= 0.01) {
-                            timer.stop();
-                            this.next("CameraHasAccess");
-                        }
-                    }
-                }));
-            }, this);
-            this.listenOn(this.dyn, "error", function(s) {
-                this.next("FatalError", {
-                    message: this.dyn.string("attach-error"),
-                    retry: "Initial"
-                });
-            }, this);
-            this.listenOn(this.dyn, "access_forbidden", function() {
-                this.next("FatalError", {
-                    message: this.dyn.string("access-forbidden"),
-                    retry: "Initial"
-                });
-            }, this);
-            this.dyn._bindMedia();
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.CameraHasAccess", ["module:ImageCapture.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["topmessage", "controlbar"],
-
-        _started: function() {
-            this.dyn.trigger("ready_to_record");
-            this._preparePromise = null;
-            if (this.dyn.get("countdown") > 0 && this.dyn.recorder && this.dyn.recorder.recordDelay(this.dyn.get("uploadoptions")) > this.dyn.get("countdown") * 1000)
-                this._preparePromise = this.dyn._prepareRecording();
-            this.dyn.set("hovermessage", "");
-            this.dyn.set("topmessage", "");
-            this.dyn.set("settingsvisible", true);
-            this.dyn.set("recordvisible", true);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            if (this.dyn.get("autorecord"))
-                this.next("RecordPrepare", {
-                    preparePromise: this._preparePromise
-                });
-        },
-
-        record: function() {
-            if (this.dyn.get("autorecord"))
-                return;
-            this.next("RecordPrepare", {
-                preparePromise: this._preparePromise
-            });
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.RecordPrepare", ["module:ImageCapture.Dynamics.RecorderStates.State","base:Timers.Timer","base:Time"], function (State, Timer, Time, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader"],
-        _locals: ["preparePromise"],
-
-        _started: function() {
-            this.dyn.set("message", "");
-            this.dyn.set("loaderlabel", "");
-            var startedRecording = false;
-            this.dyn._accessing_camera = true;
-            this._preparePromise = this._preparePromise || this.dyn._prepareRecording();
-            var countdown = this.dyn.get("countdown") ? this.dyn.get("countdown") * 1000 : 0;
-            var delay = this.dyn.recorder.recordDelay(this.dyn.get("uploadoptions")) || 0;
-            if (countdown) {
-                var displayDenominator = 1000;
-                var silentTime = 0;
-                var startTime = Time.now();
-                var endTime = startTime + Math.max(delay, countdown);
-                if (delay > countdown) {
-                    silentTime = Math.min(500, delay - countdown);
-                    displayDenominator = (delay - silentTime) / countdown * 1000;
-                } else
-                    this.dyn.set("loaderlabel", this.dyn.get("countdown"));
-                var timer = new Timer({
-                    context: this,
-                    delay: 50,
-                    fire: function() {
-                        var now = Time.now();
-                        var time_left = Math.max(0, endTime - now);
-                        if (now > silentTime + startTime) {
-                            this.dyn.set("loaderlabel", "" + Math.ceil((time_left - silentTime) / displayDenominator));
-                            this.dyn.trigger("countdown", Math.round((time_left - silentTime) / displayDenominator * 1000));
-                        }
-                        if (endTime <= now) {
-                            this.dyn.set("loaderlabel", "");
-                            timer.stop();
-                        }
-                        if ((time_left <= delay) && !startedRecording) {
-                            startedRecording = true;
-                            this._startRecording();
-                        }
-                    }
-                });
-                this.auto_destroy(timer);
-            } else
-                this._startRecording();
-        },
-
-        record: function() {
-            this._startRecording();
-        },
-
-        _startRecording: function() {
-            this.next("Recording");
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.Recording", ["module:ImageCapture.Dynamics.RecorderStates.State","base:Timers.Timer","base:Time","base:TimeFormat","base:Async"], function (State, Timer, Time, TimeFormat, Async, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["topmessage", "controlbar"],
-
-        _started: function() {
-            this.dyn.set("hovermessage", "");
-            this.dyn.set("topmessage", "");
-            this.dyn._accessing_camera = true;
-            this.dyn.trigger("recording");
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn._captureImage();
-            this.dyn._uploadCapture();
-            this.dyn._unbindMedia();
-            this.next("Uploading");
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.Uploading", ["module:ImageCapture.Dynamics.RecorderStates.State","base:Time","base:Async","base:Objs"], function (State, Time, Async, Objs, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader", "message"],
-
-        _started: function() {
-            this.dyn.set("cancancel", true);
-            this.dyn.set("skipinitial", this.dyn.get("skipinitial") || this.dyn.get("skipinitialonrerecord"));
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("loadlabel", "");
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.trigger("uploading");
-            this.dyn.set("rerecordvisible", this.dyn.get("early-rerecord"));
-            if (this.dyn.get("early-rerecord"))
-                this.dyn.set("controlbar_active", true);
-            this.dyn.set("hovermessage", "");
-            this.dyn.set("topmessage", "");
-            this.dyn.set("message", this.dyn.string("uploading"));
-            this.dyn.set("playertopmessage", this.dyn.get("message"));
-            var uploader = this.dyn._dataUploader;
-            this.listenOn(uploader, "success", function() {
-                Async.eventually(function() {
-                    if (this.destroyed())
-                        return;
-                    this._finished();
-                    this.next("Verifying");
-                }, this);
-            });
-            this.listenOn(uploader, "error", function(e) {
-                var bestError = this.dyn.string("uploading-failed");
-                try {
-                    e.forEach(function(ee) {
-                        for (var key in ee)
-                            if (this.dyn.string("upload-error-" + key))
-                                bestError = this.dyn.string("upload-error-" + key);
-                    }, this);
-                } catch (err) {}
-                this.dyn.set("player_active", false);
-                this.next("FatalError", {
-                    message: bestError,
-                    retry: this.dyn.recorderAttached() ? "Uploading" : "Initial"
-                });
-            });
-            this.listenOn(uploader, "progress", function(uploaded, total) {
-                this.dyn.trigger("upload_progress", uploaded, total);
-                if (total !== 0 && total > 0 && uploaded >= 0) {
-                    var up = Math.min(100, Math.round(uploaded / total * 100));
-                    if (!isNaN(up)) {
-                        this.dyn.set("message", this.dyn.string("uploading") + ": " + up + "%");
-                        this.dyn.set("playertopmessage", this.dyn.get("message"));
-                    }
-                }
-            });
-            if (this.dyn.get("localplayback") && ((this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback()) || this.dyn._imageFilePlaybackable)) {
-                if (this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback())
-                    this.dyn.set("playbacksource", this.dyn.recorder.localPlaybackSource());
-                else
-                    this.dyn.set("playbacksource", (window.URL || window.webkitURL).createObjectURL(this.dyn._imageFile));
-                this.dyn.set("loader_active", false);
-                this.dyn.set("message_active", false);
-                this.dyn.set("player_active", true);
-            }
-            this.dyn.set("start-upload-time", Time.now());
-            uploader.reset();
-            uploader.upload();
-        },
-
-        rerecord: function() {
-            this.dyn._detachRecorder();
-            this.dyn.trigger("rerecord");
-            this.dyn.set("recordermode", true);
-            this.next("Initial");
-        },
-
-        _finished: function() {
-            this.dyn.set("cancancel", false);
-            this.dyn.trigger("uploaded");
-            this.dyn.set("end-upload-time", Time.now());
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.RecorderStates.Verifying", ["module:ImageCapture.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader", "message"],
-
-        _started: function() {
-            this.dyn.set("loadlabel", "");
-            this.dyn.trigger("verifying");
-            this.dyn.set("message", this.dyn.string("verifying") + "...");
-            this.dyn.set("playertopmessage", this.dyn.get("message"));
-            if (this.dyn.get("localplayback") && ((this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback()) || this.dyn._imageFilePlaybackable)) {
-                this.dyn.set("loader_active", false);
-                this.dyn.set("message_active", false);
-            } else {
-                this.dyn.set("rerecordvisible", this.dyn.get("early-rerecord"));
-                if (this.dyn.get("early-rerecord"))
-                    this.dyn.set("controlbar_active", true);
-            }
-            this.dyn._verifyRecording().success(function() {
-                this.dyn.trigger("verified");
-                this.dyn._detachRecorder();
-                if (this.dyn.get("recordings"))
-                    this.dyn.set("recordings", this.dyn.get("recordings") - 1);
-                this.dyn.set("message", "");
-                this.dyn.set("playertopmessage", "");
-                this.dyn.set("verified", true);
-                this.next("Player");
-            }, this).error(function() {
-                this.dyn.set("player_active", false);
-                this.next("FatalError", {
-                    message: this.dyn.string("verifying-failed"),
-                    retry: this.dyn.recorderAttached() ? "Verifying" : "Initial"
-                });
-            }, this);
-        },
-
-        rerecord: function() {
-            this.dyn._detachRecorder();
-            this.dyn.trigger("rerecord");
-            this.dyn.set("recordermode", true);
-            this.next("Initial");
-        }
-
-    });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.Chooser", ["dynamics:Dynamic","module:Assets","browser:Info"], ["dynamics:Partials.ClickPartial","dynamics:Partials.IfPartial"], function (Class, Assets, Info, scoped) {
-
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "<div class=\"{{css}}-chooser-container\">\n\t<div class=\"{{css}}-chooser-button-container\">\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t tabindex=\"0\" class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t     ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   />\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-imagecapture",
-                    "allowrecord": true,
-                    "allowupload": true,
-
-                    "primaryrecord": true,
-                    "recordviafilecapture": false,
-
-                    "allowcustomupload": true,
-                    "allowedextensions": null
-
-                },
-
-                types: {
-                    "allowedextensions": "array",
-                    "recordviafilecapture": "boolean"
-                },
-
-                collections: ["actions"],
-
-                create: function() {
-                    var custom_accept_string = "";
-                    if (this.get("allowedextensions") && this.get("allowedextensions").length > 0) {
-                        var browser_support = Info.isEdge() || Info.isChrome() || Info.isOpera() || (Info.isFirefox() && Info.firefoxVersion() >= 42) || (Info.isInternetExplorer() && Info.internetExplorerVersion() >= 10);
-                        if (browser_support)
-                            custom_accept_string = "." + this.get("allowedextensions").join(",.");
-                    } else if (!this.get("allowcustomupload")) {
-                        custom_accept_string = "image/*,image/png";
-                    }
-
-                    var order = [];
-                    if (this.get("primaryrecord")) {
-                        if (this.get("allowrecord"))
-                            order.push("record");
-                        if (this.get("allowupload"))
-                            order.push("upload");
-                    } else {
-                        if (this.get("allowupload"))
-                            order.push("upload");
-                        if (this.get("allowrecord"))
-                            order.push("record");
-                    }
-                    var actions = this.get("actions");
-                    order.forEach(function(act, index) {
-                        switch (act) {
-                            case "record":
-                                actions.add({
-                                    type: "record",
-                                    index: index,
-                                    icon: 'videocam',
-                                    label: this.string("capture-image"),
-                                    select: Info.isMobile() && !(Info.isAndroid() && Info.isCordova()) && this.get("recordviafilecapture"),
-                                    capture: true,
-                                    accept: "image/*,image/png;capture=camcorder"
-                                });
-                                break;
-                            case "upload":
-                                actions.add({
-                                    type: "upload",
-                                    index: index,
-                                    icon: "upload",
-                                    label: this.string("upload-image"),
-                                    select: !(Info.isiOS() && Info.isCordova()),
-                                    accept: Info.isMobile() && !(Info.isAndroid() && Info.isCordova()) ? "image/*,image/png" : custom_accept_string
-                                });
-                                break;
-                        }
-                    }, this);
-                },
-
-                functions: {
-
-                    click_action: function(action) {
-                        if (action.get("select"))
-                            return;
-                        if (Info.isMobile() && Info.isCordova()) {
-                            var self = this;
-                            if (Info.isAndroid()) {
-                                navigator.device.capture.captureImage(function(mediaFiles) {
-                                    self.trigger("upload", mediaFiles[0]);
-                                }, function(error) {}, {
-                                    limit: 1
-                                });
-                            } else if (Info.isiOS()) {
-                                navigator.camera.getPicture(function(url) {
-                                    self.trigger("upload", {
-                                        localURL: url,
-                                        fullPath: url
-                                    });
-                                }, function(error) {}, {
-                                    destinationType: Camera.DestinationType.FILE_URI,
-                                    sourceType: Camera.PictureSourceType.PHOTOLIBRARY,
-                                    mediaType: Camera.MediaType.IMAGE
-                                });
-                            }
-                        } else
-                            this.trigger("record");
-                    },
-
-                    select_file_action: function(action, domEvent) {
-                        if (!action.get("select"))
-                            return;
-                        this.trigger("upload", domEvent[0].target);
-                    }
-
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "actions": function (obj) { with (obj) { return actions; } }, "click_action(action)": function (obj) { with (obj) { return click_action(action); } }, "action.index": function (obj) { with (obj) { return action.index; } }, "action.select && action.capture": function (obj) { with (obj) { return action.select && action.capture; } }, "select_file_action(action, domEvent)": function (obj) { with (obj) { return select_file_action(action, domEvent); } }, "action.accept": function (obj) { with (obj) { return action.accept; } }, "action.select && !action.capture": function (obj) { with (obj) { return action.select && !action.capture; } }, "action.icon": function (obj) { with (obj) { return action.icon; } }, "action.label": function (obj) { with (obj) { return action.label; } }/**/ })
-        .register("ba-imagecapture-chooser")
-        .attachStringTable(Assets.strings)
-        .addStrings({
-            "image-capture": "Capture Image",
-            "upload-image": "Upload Image"
-        });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.Controlbar", ["dynamics:Dynamic","module:Assets","base:Timers.Timer"], ["dynamics:Partials.ShowPartial","dynamics:Partials.RepeatPartial"], function (Class, Assets, Timer, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "<div class=\"{{css}}-dashboard\">\n\t<div class=\"{{css}}-backbar\"></div>\n\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t<div class=\"{{css}}-settings-backbar\"></div>\n\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-settings-front\">\n\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t<li>\n\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t/>\n\t\t\t\t\t<span></span>\n\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t</label>\n\t\t\t\t </li>\n\t\t\t</ul>\n\t\t</div>\n\t</div>\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n        <div class=\"{{css}}-leftbutton-container\" ba-show=\"{{settingsvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected'}}\"\n                 onclick=\"{{settingsopen=!settingsopen}}\"\n                 onmouseenter=\"{{hover(string('settings'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-cog\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{settingsvisible}}\">\n            <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-icon-inner\"\n                 onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{camerahealthy ? 'good' : 'bad' }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n        \t<div data-selector=\"record-label-block\" class=\"{{css}}-label-label\">\n        \t\t{{controlbarlabel}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{record()}}\"\n                 onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('record')}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{rerecordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{rerecord()}}\"\n                 onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('rerecord')}}\n        \t</div>\n        </div>\n\n\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n\t\t\t\t{{string('cancel')}}\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-imagecapture",
-                    "hovermessage": ""
-                },
-
-                functions: {
-                    selectCamera: function(cameraId) {
-                        this.trigger("select-camera", cameraId);
-                    },
-                    hover: function(text) {
-                        this.set("hovermessage", text);
-                    },
-                    unhover: function() {
-                        this.set("hovermessage", "");
-                    },
-                    record: function() {
-                        this.trigger("invoke-record");
-                    },
-                    rerecord: function() {
-                        this.trigger("invoke-rerecord");
-                    },
-                    cancel: function() {
-                        this.trigger("invoke-cancel");
-                    }
-                }
-
-            };
-        })
-        .register("ba-imagecapture-controlbar")
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "settingsvisible && settingsopen": function (obj) { with (obj) { return settingsvisible && settingsopen; } }, "cameras": function (obj) { with (obj) { return cameras; } }, "selectCamera(camera.id)": function (obj) { with (obj) { return selectCamera(camera.id); } }, "selectedcamera == camera.id": function (obj) { with (obj) { return selectedcamera == camera.id; } }, "camera.label": function (obj) { with (obj) { return camera.label; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "settingsopen=!settingsopen": function (obj) { with (obj) { return settingsopen=!settingsopen; } }, "settingsopen ? 'selected' : 'unselected'": function (obj) { with (obj) { return settingsopen ? 'selected' : 'unselected'; } }, "hover(string('settings'))": function (obj) { with (obj) { return hover(string('settings')); } }, "unhover()": function (obj) { with (obj) { return unhover(); } }, "hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))": function (obj) { with (obj) { return hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy')); } }, "camerahealthy ? 'good' : 'bad'": function (obj) { with (obj) { return camerahealthy ? 'good' : 'bad'; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "record()": function (obj) { with (obj) { return record(); } }, "hover(string('record-tooltip'))": function (obj) { with (obj) { return hover(string('record-tooltip')); } }, "string('record')": function (obj) { with (obj) { return string('record'); } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "hover(string('rerecord-tooltip'))": function (obj) { with (obj) { return hover(string('rerecord-tooltip')); } }, "string('rerecord')": function (obj) { with (obj) { return string('rerecord'); } }, "cancelvisible": function (obj) { with (obj) { return cancelvisible; } }, "cancel()": function (obj) { with (obj) { return cancel(); } }, "hover(string('cancel-tooltip'))": function (obj) { with (obj) { return hover(string('cancel-tooltip')); } }, "string('cancel')": function (obj) { with (obj) { return string('cancel'); } }/**/ })
-        .attachStringTable(Assets.strings)
-        .addStrings({
-            "settings": "Settings",
-            "camerahealthy": "Lighting is good",
-            "cameraunhealthy": "Lighting is not optimal",
-            "record": "Capture",
-            "record-tooltip": "Click here to capture.",
-            "rerecord": "Redo",
-            "rerecord-tooltip": "Click here to redo.",
-            "cancel": "Cancel",
-            "cancel-tooltip": "Click here to cancel."
-        });
-});
-
-Scoped.define("module:ImageCapture.Dynamics.Faceoutline", ["dynamics:Dynamic"], function (Class, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "<svg viewBox=\"0 0 301 171\" style=\"width:100%; height:100%\">\n    <g>\n        <path fill=\"none\" stroke=\"white\" stroke-width=\"2\" stroke-miterlimit=\"10\" stroke-dasharray=\"3.0228,3.0228\" d=\"M198.5,79.831c0,40.542-22.752,78.579-47.5,78.579c-24.749,0-47.5-38.036-47.5-78.579c0-40.543,17.028-68.24,47.5-68.24C185.057,11.591,198.5,39.288,198.5,79.831z\"></path>\n    </g>\n</svg>"
-
-            };
-        })
-        .registerFunctions({ /**//**/ })
-        .register("ba-imagecapture-faceoutline");
-});
-
-Scoped.define("module:ImageCapture.Dynamics.Loader", ["dynamics:Dynamic","module:Assets"], ["dynamics:Partials.ShowPartial"], function (Class, Assets, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "\n<div class=\"{{css}}-loader-container\">\n    <div data-selector=\"recorder-loader-block\" class=\"{{css}}-loader-loader\" title=\"{{tooltip || ''}}\">\n    </div>\n</div>\n<div data-selector=\"recorder-loader-label-container\" class=\"{{css}}-loader-label\" ba-show=\"{{label}}\">\n\t{{label}}\n</div>\n",
-
-                attrs: {
-                    "css": "ba-imagecapture",
-                    "tooltip": "",
-                    "label": "",
-                    "message": "",
-                    "hovermessage": ""
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "tooltip || ''": function (obj) { with (obj) { return tooltip || ''; } }, "label": function (obj) { with (obj) { return label; } }/**/ })
-        .register("ba-imagecapture-loader")
-        .attachStringTable(Assets.strings)
-        .addStrings({});
-});
-
-Scoped.define("module:ImageCapture.Dynamics.Message", ["dynamics:Dynamic"], ["dynamics:Partials.ClickPartial"], function (Class, Templates, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "\n<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n        <p>\n            {{message || \"\"}}\n        </p>\n        <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n            <li>\n                <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                    {{link.title}}\n                </a>\n            </li>\n        </ul>\n    </div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-imagecapture",
-                    "message": '',
-                    "links": null
-                },
-
-                functions: {
-
-                    click: function() {
-                        this.trigger("click");
-                    },
-
-                    linkClick: function(link) {
-                        this.trigger("link", link);
-                    }
-
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "click()": function (obj) { with (obj) { return click(); } }, "message || \"\"": function (obj) { with (obj) { return message || ""; } }, "links && links.length > 0": function (obj) { with (obj) { return links && links.length > 0; } }, "links": function (obj) { with (obj) { return links; } }, "linkClick(link)": function (obj) { with (obj) { return linkClick(link); } }, "link.title": function (obj) { with (obj) { return link.title; } }/**/ })
-        .register("ba-imagecapture-message");
-});
-
-Scoped.define("module:ImageCapture.Dynamics.Topmessage", ["dynamics:Dynamic"], function (Class, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "\n<div class=\"{{css}}-topmessage-container\">\n    <div class='{{css}}-topmessage-background'>\n    </div>\n    <div data-selector=\"recorder-topmessage-block\" class='{{css}}-topmessage-message'>\n        {{topmessage}}\n    </div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-imagecapture",
-                    "topmessage": ''
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "topmessage": function (obj) { with (obj) { return topmessage; } }/**/ })
-        .register("ba-imagecapture-topmessage");
 });
 
 Scoped.define("module:AudioPlayer.Dynamics.Controlbar", ["dynamics:Dynamic","base:TimeFormat","browser:Dom","module:Assets","browser:Info"], ["dynamics:Partials.StylesPartial","dynamics:Partials.ShowPartial","dynamics:Partials.IfPartial","dynamics:Partials.ClickPartial"], function (Class, TimeFormat, Dom, Assets, Info, scoped) {
@@ -33681,912 +32912,6 @@ Scoped.define("module:AudioPlayer.Dynamics.PlayerStates.NextAudio", ["module:Aud
     });
 });
 
-Scoped.define("module:AudioRecorder.Dynamics.Chooser", ["dynamics:Dynamic","module:Assets","browser:Info"], ["dynamics:Partials.ClickPartial","dynamics:Partials.IfPartial"], function (Class, Assets, Info, scoped) {
-
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "<div class=\"{{css}}-chooser-container\">\n\t<div class=\"{{css}}-chooser-button-container\">\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t tabindex=\"0\" class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t     ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   />\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-audiorecorder",
-                    "allowrecord": true,
-                    "allowupload": true,
-
-                    "primaryrecord": true,
-                    "recordviafilecapture": false,
-
-                    "allowcustomupload": true,
-                    "allowedextensions": null
-
-                },
-
-                types: {
-                    "allowedextensions": "array",
-                    "recordviafilecapture": "boolean"
-                },
-
-                collections: ["actions"],
-
-                create: function() {
-                    var custom_accept_string = "";
-                    if (this.get("allowedextensions") && this.get("allowedextensions").length > 0) {
-                        var browser_support = Info.isEdge() || Info.isChrome() || Info.isOpera() || (Info.isFirefox() && Info.firefoxVersion() >= 42) || (Info.isInternetExplorer() && Info.internetExplorerVersion() >= 10);
-                        if (browser_support)
-                            custom_accept_string = "." + this.get("allowedextensions").join(",.");
-                    } else if (!this.get("allowcustomupload")) {
-                        custom_accept_string = "audio/*,audio/mp3";
-                    }
-
-                    var order = [];
-                    if (this.get("primaryrecord")) {
-                        if (this.get("allowrecord"))
-                            order.push("record");
-                        if (this.get("allowupload"))
-                            order.push("upload");
-                    } else {
-                        if (this.get("allowupload"))
-                            order.push("upload");
-                        if (this.get("allowrecord"))
-                            order.push("record");
-                    }
-                    var actions = this.get("actions");
-                    order.forEach(function(act, index) {
-                        switch (act) {
-                            case "record":
-                                actions.add({
-                                    type: "record",
-                                    index: index,
-                                    icon: 'volume-up',
-                                    label: this.string("record-audio"),
-                                    select: Info.isMobile() && !(Info.isAndroid() && Info.isCordova()) && this.get("recordviafilecapture"),
-                                    capture: true,
-                                    accept: "audio/*,audio/mp3;capture=camcorder"
-                                });
-                                break;
-                            case "upload":
-                                actions.add({
-                                    type: "upload",
-                                    index: index,
-                                    icon: "upload",
-                                    label: this.string("upload-audio"),
-                                    select: !(Info.isiOS() && Info.isCordova()),
-                                    accept: Info.isMobile() && !(Info.isAndroid() && Info.isCordova()) ? "audio/*,audio/mp3" : custom_accept_string
-                                });
-                                break;
-                        }
-                    }, this);
-                },
-
-                functions: {
-
-                    click_action: function(action) {
-                        if (action.get("select"))
-                            return;
-                        if (Info.isMobile() && Info.isCordova()) {
-                            var self = this;
-                            if (Info.isAndroid()) {
-                                navigator.device.capture.captureAudio(function(mediaFiles) {
-                                    self.trigger("upload", mediaFiles[0]);
-                                }, function(error) {}, {
-                                    limit: 1,
-                                    duration: this.get("timelimit")
-                                });
-                            } else if (Info.isiOS()) {
-                                navigator.camera.getPicture(function(url) {
-                                    self.trigger("upload", {
-                                        localURL: url,
-                                        fullPath: url
-                                    });
-                                }, function(error) {}, {
-                                    destinationType: Camera.DestinationType.FILE_URI,
-                                    sourceType: Camera.PictureSourceType.PHOTOLIBRARY,
-                                    mediaType: Camera.MediaType.AUDIO
-                                });
-                            }
-                        } else
-                            this.trigger("record");
-                    },
-
-                    select_file_action: function(action, domEvent) {
-                        if (!action.get("select"))
-                            return;
-                        this.trigger("upload", domEvent[0].target);
-                    }
-
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "actions": function (obj) { with (obj) { return actions; } }, "click_action(action)": function (obj) { with (obj) { return click_action(action); } }, "action.index": function (obj) { with (obj) { return action.index; } }, "action.select && action.capture": function (obj) { with (obj) { return action.select && action.capture; } }, "select_file_action(action, domEvent)": function (obj) { with (obj) { return select_file_action(action, domEvent); } }, "action.accept": function (obj) { with (obj) { return action.accept; } }, "action.select && !action.capture": function (obj) { with (obj) { return action.select && !action.capture; } }, "action.icon": function (obj) { with (obj) { return action.icon; } }, "action.label": function (obj) { with (obj) { return action.label; } }/**/ })
-        .register("ba-audiorecorder-chooser")
-        .attachStringTable(Assets.strings)
-        .addStrings({
-            "record-audio": "Record Audio",
-            "upload-audio": "Upload Audio"
-        });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.Controlbar", ["dynamics:Dynamic","module:Assets","base:Timers.Timer"], ["dynamics:Partials.ShowPartial","dynamics:Partials.RepeatPartial"], function (Class, Assets, Timer, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "<div class=\"{{css}}-dashboard\">\n\t<div class=\"{{css}}-backbar\"></div>\n\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t<div class=\"{{css}}-settings-backbar\"></div>\n\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-settings-front\">\n\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\">\n\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t>\n\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t<span></span>\n\t\t\t\t\t<label>\n\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t</label>\n\t\t\t\t </li>\n\t\t\t</ul>\n\t\t</div>\n\t</div>\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n        <div class=\"{{css}}-leftbutton-container\" ba-show=\"{{settingsvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected'}}\"\n                 onclick=\"{{settingsopen=!settingsopen}}\"\n                 onmouseenter=\"{{hover(string('settings'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-cog\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{settingsvisible}}\">\n            <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-icon-inner\"\n                 onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-lefticon-container\" ba-show=\"{{stopvisible && recordingindication}}\">\n            <div data-selector=\"recording-indicator\" class=\"{{css}}-recording-indication\">\n            </div>\n        </div>\n\n        <div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n        \t<div data-selector=\"record-label-block\" class=\"{{css}}-label-label\">\n        \t\t{{controlbarlabel}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{record()}}\"\n                 onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('record')}}\n        \t</div>\n        </div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{rerecordvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{rerecord()}}\"\n                 onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('rerecord')}}\n        \t</div>\n        </div>\n\n\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n\t\t\t\t{{string('cancel')}}\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-show=\"{{stopvisible}}\">\n        \t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n                 onclick=\"{{stop()}}\"\n                 onmouseenter=\"{{hover( mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n        \t\t{{string('stop')}}\n        \t</div>\n        </div>\n\n\t</div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-audiorecorder",
-                    "hovermessage": "",
-                    "recordingindication": true
-                },
-
-                create: function() {
-                    this.auto_destroy(new Timer({
-                        context: this,
-                        fire: function() {
-                            this.set("recordingindication", !this.get("recordingindication"));
-                        },
-                        delay: 500
-                    }));
-                },
-
-                functions: {
-                    selectMicrophone: function(microphoneId) {
-                        this.trigger("select-microphone", microphoneId);
-                    },
-                    hover: function(text) {
-                        this.set("hovermessage", text);
-                    },
-                    unhover: function() {
-                        this.set("hovermessage", "");
-                    },
-                    record: function() {
-                        this.trigger("invoke-record");
-                    },
-                    rerecord: function() {
-                        this.trigger("invoke-rerecord");
-                    },
-                    stop: function() {
-                        this.trigger("invoke-stop");
-                    },
-                    cancel: function() {
-                        this.trigger("invoke-cancel");
-                    }
-                }
-
-            };
-        })
-        .register("ba-audiorecorder-controlbar")
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "settingsvisible && settingsopen": function (obj) { with (obj) { return settingsvisible && settingsopen; } }, "microphones": function (obj) { with (obj) { return microphones; } }, "selectMicrophone(microphone.id)": function (obj) { with (obj) { return selectMicrophone(microphone.id); } }, "selectedmicrophone == microphone.id": function (obj) { with (obj) { return selectedmicrophone == microphone.id; } }, "microphone.label": function (obj) { with (obj) { return microphone.label; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "settingsopen=!settingsopen": function (obj) { with (obj) { return settingsopen=!settingsopen; } }, "settingsopen ? 'selected' : 'unselected'": function (obj) { with (obj) { return settingsopen ? 'selected' : 'unselected'; } }, "hover(string('settings'))": function (obj) { with (obj) { return hover(string('settings')); } }, "unhover()": function (obj) { with (obj) { return unhover(); } }, "hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))": function (obj) { with (obj) { return hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy')); } }, "microphonehealthy ? 'good' : 'bad'": function (obj) { with (obj) { return microphonehealthy ? 'good' : 'bad'; } }, "stopvisible && recordingindication": function (obj) { with (obj) { return stopvisible && recordingindication; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "record()": function (obj) { with (obj) { return record(); } }, "hover(string('record-tooltip'))": function (obj) { with (obj) { return hover(string('record-tooltip')); } }, "string('record')": function (obj) { with (obj) { return string('record'); } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "hover(string('rerecord-tooltip'))": function (obj) { with (obj) { return hover(string('rerecord-tooltip')); } }, "string('rerecord')": function (obj) { with (obj) { return string('rerecord'); } }, "cancelvisible": function (obj) { with (obj) { return cancelvisible; } }, "cancel()": function (obj) { with (obj) { return cancel(); } }, "hover(string('cancel-tooltip'))": function (obj) { with (obj) { return hover(string('cancel-tooltip')); } }, "string('cancel')": function (obj) { with (obj) { return string('cancel'); } }, "stopvisible": function (obj) { with (obj) { return stopvisible; } }, "stop()": function (obj) { with (obj) { return stop(); } }, "mintimeindicator ? css + '-disabled': ''": function (obj) { with (obj) { return mintimeindicator ? css + '-disabled': ''; } }, "mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')": function (obj) { with (obj) { return mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'); } }, "hover( mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))": function (obj) { with (obj) { return hover( mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')); } }, "string('stop')": function (obj) { with (obj) { return string('stop'); } }/**/ })
-        .attachStringTable(Assets.strings)
-        .addStrings({
-            "settings": "Settings",
-            "microphonehealthy": "Sound is good",
-            "microphoneunhealthy": "Cannot pick up any sound",
-            "record": "Record",
-            "record-tooltip": "Click here to record.",
-            "rerecord": "Redo",
-            "rerecord-tooltip": "Click here to redo.",
-            "stop": "Stop",
-            "stop-tooltip": "Click here to stop.",
-            "stop-available-after": "Minimum recording time is %d seconds",
-            "cancel": "Cancel",
-            "cancel-tooltip": "Click here to cancel."
-        });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.Loader", ["dynamics:Dynamic","module:Assets"], ["dynamics:Partials.ShowPartial"], function (Class, Assets, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "\n<div class=\"{{css}}-loader-container\">\n    <div data-selector=\"recorder-loader-block\" class=\"{{css}}-loader-loader\" title=\"{{tooltip || ''}}\">\n    </div>\n</div>\n<div data-selector=\"recorder-loader-label-container\" class=\"{{css}}-loader-label\" ba-show=\"{{label}}\">\n\t{{label}}\n</div>\n",
-
-                attrs: {
-                    "css": "ba-audiorecorder",
-                    "tooltip": "",
-                    "label": "",
-                    "message": "",
-                    "hovermessage": ""
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "tooltip || ''": function (obj) { with (obj) { return tooltip || ''; } }, "label": function (obj) { with (obj) { return label; } }/**/ })
-        .register("ba-audiorecorder-loader")
-        .attachStringTable(Assets.strings)
-        .addStrings({});
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.Message", ["dynamics:Dynamic"], ["dynamics:Partials.ClickPartial"], function (Class, Templates, scoped) {
-    return Class.extend({
-            scoped: scoped
-        }, function(inherited) {
-            return {
-
-                template: "\n<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n        <p>\n            {{message || \"\"}}\n        </p>\n        <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n            <li>\n                <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                    {{link.title}}\n                </a>\n            </li>\n        </ul>\n    </div>\n</div>\n",
-
-                attrs: {
-                    "css": "ba-audiorecorder",
-                    "message": '',
-                    "links": null
-                },
-
-                functions: {
-
-                    click: function() {
-                        this.trigger("click");
-                    },
-
-                    linkClick: function(link) {
-                        this.trigger("link", link);
-                    }
-
-                }
-
-            };
-        })
-        .registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "click()": function (obj) { with (obj) { return click(); } }, "message || \"\"": function (obj) { with (obj) { return message || ""; } }, "links && links.length > 0": function (obj) { with (obj) { return links && links.length > 0; } }, "links": function (obj) { with (obj) { return links; } }, "linkClick(link)": function (obj) { with (obj) { return linkClick(link); } }, "link.title": function (obj) { with (obj) { return link.title; } }/**/ })
-        .register("ba-audiorecorder-message");
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.State", ["base:States.State","base:Events.ListenMixin","base:Objs"], function (State, ListenMixin, Objs, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, [ListenMixin, {
-
-        dynamics: [],
-
-        _start: function() {
-            this.dyn = this.host.dynamic;
-            Objs.iter(Objs.extend({
-                "message": false,
-                "chooser": false,
-                "controlbar": false,
-                "loader": false
-            }, Objs.objectify(this.dynamics)), function(value, key) {
-                this.dyn.set(key + "_active", value);
-            }, this);
-            this.dyn.set("message_links", null);
-            this.dyn._accessing_microphone = false;
-            this._started();
-        },
-
-        _started: function() {},
-
-        record: function() {
-            this.dyn.set("autorecord", true);
-        },
-
-        stop: function() {
-            this.dyn.scopes.player.execute('stop');
-        },
-
-        play: function() {
-            this.dyn.scopes.player.execute('play');
-        },
-
-        pause: function() {
-            this.dyn.scopes.player.execute('pause');
-        },
-
-        rerecord: function() {},
-
-        selectRecord: function() {},
-
-        selectUpload: function(file) {}
-
-    }]);
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.FatalError", ["module:AudioRecorder.Dynamics.RecorderStates.State","browser:Info","base:Timers.Timer"], function (State, Info, Timer, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["message"],
-        _locals: ["message", "retry"],
-
-        _started: function() {
-            this.dyn.set("message", this._message || this.dyn.string("recorder-error"));
-            this.dyn.set("shortMessage", this.dyn.get("message").length < 30);
-            this.listenOn(this.dyn, "message-click", function() {
-                if (this._retry)
-                    this.next(this._retry);
-            });
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.Initial", ["module:AudioRecorder.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        _started: function() {
-            this.dyn.set("is_initial_state", true);
-            this.dyn.set("verified", false);
-            this.dyn.set("playbacksource", null);
-            this.dyn.set("player_active", false);
-            this.dyn._audioFileName = null;
-            this.dyn._audioFile = null;
-            this.dyn._audioFilePlaybackable = false;
-            this.dyn._initializeUploader();
-            if (!this.dyn.get("recordermode")) {
-                if (!this.dyn.get("audio")) {
-                    console.warn("recordermode:false requires an existing video to be present and provided.");
-                    this.dyn.set("recordermode", true);
-                } else
-                    this.next("Player");
-            } else if (this.dyn.get("autorecord") || this.dyn.get("skipinitial"))
-                this.eventualNext("RequiredSoftwareCheck");
-            else
-                this.next("Chooser");
-        },
-
-        _end: function() {
-            this.dyn.set("is_initial_state", false);
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.Player", ["module:AudioRecorder.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        rerecord: function() {
-            this.dyn.trigger("rerecord");
-            this.dyn.set("recordermode", true);
-            this.next("Initial");
-        },
-
-        _started: function() {
-            this.dyn.set("player_active", true);
-        },
-
-        _end: function() {
-            this.dyn.set("player_active", false);
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.Chooser", ["module:AudioRecorder.Dynamics.RecorderStates.State","base:Strings","browser:Info","media:Player.Support"], function (State, Strings, Info, PlayerSupport, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["chooser"],
-
-        record: function() {
-            this.dyn.set("autorecord", true);
-            this.selectRecord();
-        },
-
-        selectRecord: function() {
-            this.dyn.set("record_media", "microphone");
-            this.next("RequiredSoftwareCheck");
-        },
-
-        selectUpload: function(file) {
-            if (!(Info.isMobile() && Info.isAndroid() && Info.isCordova())) {
-                if (this.dyn.get("allowedextensions")) {
-                    var filename = (file.files[0].name || "").toLowerCase();
-                    var found = false;
-                    this.dyn.get("allowedextensions").forEach(function(extension) {
-                        if (Strings.ends_with(filename, "." + extension.toLowerCase()))
-                            found = true;
-                    }, this);
-                    if (!found) {
-                        this.next("FatalError", {
-                            message: this.dyn.string("unsupported_audio_type").replace("%s", this.dyn.get("allowedextensions").join(" / ")),
-                            retry: "Chooser"
-                        });
-                        return;
-                    }
-                }
-                if (this.dyn.get("filesizelimit") && file.files && file.files.length > 0 && file.files[0].size && file.files[0].size > this.dyn.get("filesizelimit")) {
-                    var fact = "KB";
-                    var size = Math.round(file.files[0].size / 1000);
-                    var limit = Math.round(this.dyn.get("filesizelimit") / 1000);
-                    if (size > 999) {
-                        fact = "MB";
-                        size = Math.round(size / 1000);
-                        limit = Math.round(limit / 1000);
-                    }
-                    this.next("FatalError", {
-                        message: this.dyn.string("audio_file_too_large").replace("%s", size + fact + " / " + limit + fact),
-                        retry: "Chooser"
-                    });
-                    return;
-                }
-            }
-            try {
-                PlayerSupport.audioFileInfo(file.files[0]).success(function(data) {
-                    if (data.duration && this.dyn.get("enforce-duration")) {
-                        if ((this.dyn.get("timeminlimit") && data.duration < this.dyn.get("timeminlimit")) || (this.dyn.get("timelimit") && data.duration > this.dyn.get("timelimit"))) {
-                            this.next("FatalError", {
-                                message: this.dyn.string("upload-error-duration"),
-                                retry: "Chooser"
-                            });
-                            return;
-                        }
-                    }
-                    this.dyn._audioFilePlaybackable = true;
-                    this._uploadFile(file);
-                }, this).error(function() {
-                    this._uploadFile(file);
-                }, this);
-            } catch (e) {
-                this._uploadFile(file);
-            }
-        },
-
-        _uploadFile: function(file) {
-            this.dyn.set("creation-type", Info.isMobile() ? "mobile" : "upload");
-            try {
-                this.dyn._audioFileName = file.files[0].name;
-                this.dyn._audioFile = file.files[0];
-            } catch (e) {}
-            this.dyn._prepareRecording().success(function() {
-                this.dyn.trigger("upload_selected", file);
-                this.dyn._uploadAudioFile(file);
-                this.next("Uploading");
-            }, this).error(function(s) {
-                this.next("FatalError", {
-                    message: s,
-                    retry: "Chooser"
-                });
-            }, this);
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.RequiredSoftwareCheck", ["module:AudioRecorder.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader"],
-
-        _started: function() {
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("skipvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.set("loaderlabel", "");
-            this.listenOn(this.dyn, "error", function(s) {
-                this.next("FatalError", {
-                    message: this.dyn.string("attach-error"),
-                    retry: "Initial"
-                });
-            }, this);
-            this.dyn._attachRecorder();
-            if (this.dyn) {
-                this.dyn.on("message-link-click", function(link) {
-                    link.execute();
-                    this.next("RequiredSoftwareWait");
-                }, this);
-                this.dyn._softwareDependencies().error(function(dependencies) {
-                    this.dyn.set("message_links", dependencies);
-                    this.dyn.set("loader_active", false);
-                    this.dyn.set("message_active", true);
-                    this.dyn.set("message", this.dyn.string("software-required"));
-                }, this).success(function() {
-                    this.next("MicrophoneAccess");
-                }, this);
-            }
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.RequiredSoftwareWait", ["module:AudioRecorder.Dynamics.RecorderStates.State","base:Promise","browser:Dom"], function (State, Promise, Dom, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["message"],
-
-        _started: function() {
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.set("loaderlabel", "");
-            this.dyn.set("message", this.dyn.string("software-waiting"));
-            Promise.resilience(function() {
-                if (Dom.isTabHidden())
-                    return Promise.error("Not ready");
-                return this.dyn._softwareDependencies();
-            }, this, 120, [], 1000).success(function() {
-                this.next("MicrophoneAccess");
-            }, this).error(function() {
-                this.next("RequiredSoftwareCheck");
-            }, this);
-            this.dyn.on("message-click", function() {
-                this.next("RequiredSoftwareCheck");
-            }, this);
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.MicrophoneAccess", ["module:AudioRecorder.Dynamics.RecorderStates.State","base:Timers.Timer"], function (State, Timer, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader"],
-
-        _started: function() {
-            this.dyn.set("settingsvisible", true);
-            this.dyn.set("recordvisible", true);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.set("loaderlabel", "");
-            this.listenOn(this.dyn, "bound", function() {
-                this.dyn.set("creation-type", this.dyn.isFlash() ? "flash" : "webrtc");
-                this.next("MicrophoneHasAccess");
-            }, this);
-            this.listenOn(this.dyn, "error", function(s) {
-                this.next("FatalError", {
-                    message: this.dyn.string("attach-error"),
-                    retry: "Initial"
-                });
-            }, this);
-            this.listenOn(this.dyn, "access_forbidden", function() {
-                this.next("FatalError", {
-                    message: this.dyn.string("access-forbidden"),
-                    retry: "Initial"
-                });
-            }, this);
-            this.dyn._bindMedia();
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.MicrophoneHasAccess", ["module:AudioRecorder.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["controlbar"],
-
-        _started: function() {
-            this.dyn.trigger("ready_to_record");
-            this._preparePromise = null;
-            if (this.dyn.get("countdown") > 0 && this.dyn.recorder && this.dyn.recorder.recordDelay(this.dyn.get("uploadoptions")) > this.dyn.get("countdown") * 1000)
-                this._preparePromise = this.dyn._prepareRecording();
-            this.dyn.set("hovermessage", "");
-            this.dyn.set("settingsvisible", true);
-            this.dyn.set("recordvisible", true);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("controlbarlabel", "");
-            if (this.dyn.get("autorecord"))
-                this.next("RecordPrepare", {
-                    preparePromise: this._preparePromise
-                });
-        },
-
-        record: function() {
-            if (this.dyn.get("autorecord"))
-                return;
-            if (this.dyn.get("audio-test-mandatory") && !this.dyn.get("microphonehealthy") && !this._preparePromise)
-                return;
-            this.next("RecordPrepare", {
-                preparePromise: this._preparePromise
-            });
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.RecordPrepare", ["module:AudioRecorder.Dynamics.RecorderStates.State","base:Timers.Timer","base:Time"], function (State, Timer, Time, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader"],
-        _locals: ["preparePromise"],
-
-        _started: function() {
-            this.dyn.set("message", "");
-            this.dyn.set("loaderlabel", "");
-            var startedRecording = false;
-            this.dyn._accessing_microphone = true;
-            this._preparePromise = this._preparePromise || this.dyn._prepareRecording();
-            var countdown = this.dyn.get("countdown") ? this.dyn.get("countdown") * 1000 : 0;
-            var delay = this.dyn.recorder.recordDelay(this.dyn.get("uploadoptions")) || 0;
-            if (countdown) {
-                var displayDenominator = 1000;
-                var silentTime = 0;
-                var startTime = Time.now();
-                var endTime = startTime + Math.max(delay, countdown);
-                if (delay > countdown) {
-                    silentTime = Math.min(500, delay - countdown);
-                    displayDenominator = (delay - silentTime) / countdown * 1000;
-                } else
-                    this.dyn.set("loaderlabel", this.dyn.get("countdown"));
-                var timer = new Timer({
-                    context: this,
-                    delay: 50,
-                    fire: function() {
-                        var now = Time.now();
-                        var time_left = Math.max(0, endTime - now);
-                        if (now > silentTime + startTime) {
-                            this.dyn.set("loaderlabel", "" + Math.ceil((time_left - silentTime) / displayDenominator));
-                            this.dyn.trigger("countdown", Math.round((time_left - silentTime) / displayDenominator * 1000));
-                        }
-                        if (endTime <= now) {
-                            this.dyn.set("loaderlabel", "");
-                            timer.stop();
-                        }
-                        if ((time_left <= delay) && !startedRecording) {
-                            startedRecording = true;
-                            this._startRecording();
-                        }
-                    }
-                });
-                this.auto_destroy(timer);
-            } else
-                this._startRecording();
-        },
-
-        record: function() {
-            this._startRecording();
-        },
-
-        _startRecording: function() {
-            this._preparePromise.success(function() {
-                this.dyn._startRecording().success(function() {
-                    this.next("Recording");
-                }, this).error(function(s) {
-                    this.next("FatalError", {
-                        message: s,
-                        retry: "RequiredSoftwareCheck"
-                    });
-                }, this);
-            }, this).error(function(s) {
-                this.next("FatalError", {
-                    message: s,
-                    retry: "RequiredSoftwareCheck"
-                });
-            }, this);
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.Recording", ["module:AudioRecorder.Dynamics.RecorderStates.State","base:Timers.Timer","base:Time","base:TimeFormat","base:Async"], function (State, Timer, Time, TimeFormat, Async, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["controlbar"],
-
-        _started: function() {
-            this.dyn.set("hovermessage", "");
-            this.dyn.set("topmessage", "");
-            this.dyn._accessing_microphone = true;
-            this.dyn.trigger("recording");
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("rerecordvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("stopvisible", true);
-
-            this._startTime = Time.now();
-            this._stopping = false;
-            this._timer = this.auto_destroy(new Timer({
-                immediate: true,
-                delay: 10,
-                context: this,
-                fire: this._timerFire
-            }));
-        },
-
-        _timerFire: function() {
-            var limit = this.dyn.get("timelimit");
-            var current = Time.now();
-            var display = Math.max(0, limit ? (this._startTime + limit * 1000 - current) : (current - this._startTime));
-            this.dyn.trigger("recording_progress", current - this._startTime);
-            this.dyn.set("controlbarlabel", this.dyn.get("display-timer") ? TimeFormat.format(TimeFormat.ELAPSED_MINUTES_SECONDS, display) : "");
-
-            if (this.dyn.get("timeminlimit"))
-                this.dyn.set("mintimeindicator", (Time.now() - this._startTime) / 1000 <= this.dyn.get("timeminlimit"));
-
-            if (limit && this._startTime + limit * 1000 <= current) {
-                this._timer.stop();
-                this.stop();
-            }
-
-        },
-
-        stop: function() {
-            var minlimit = this.dyn.get("timeminlimit");
-            if (minlimit) {
-                var delta = (Time.now() - this._startTime) / 1000;
-                if (delta < minlimit) {
-                    var limit = this.dyn.get("timelimit");
-                    if (!limit || limit > delta)
-                        return;
-                }
-            }
-            if (this._stopping)
-                return;
-            this.dyn.set("loader_active", true);
-            this.dyn.set("controlbar_active", false);
-            this.dyn.set("message_active", true);
-            this.dyn.set("message", "");
-            this._stopping = true;
-            Async.eventually(function() {
-                this.dyn._stopRecording().success(function() {
-                    this._hasStopped();
-                    this.next("Uploading");
-                }, this).error(function(s) {
-                    this.next("FatalError", {
-                        message: s,
-                        retry: "RequiredSoftwareCheck"
-                    });
-                }, this);
-            }, this);
-        },
-
-        _hasStopped: function() {
-            this.dyn.set("duration", Time.now() - this._startTime);
-            this.dyn._unbindMedia();
-            this.dyn.trigger("recording_stopped");
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.Uploading", ["module:AudioRecorder.Dynamics.RecorderStates.State","base:Time","base:Async","base:Objs"], function (State, Time, Async, Objs, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader", "message"],
-
-        _started: function() {
-            this.dyn.set("cancancel", true);
-            this.dyn.set("skipinitial", this.dyn.get("skipinitial") || this.dyn.get("skipinitialonrerecord"));
-            this.dyn.set("settingsvisible", false);
-            this.dyn.set("recordvisible", false);
-            this.dyn.set("stopvisible", false);
-            this.dyn.set("loadlabel", "");
-            this.dyn.set("controlbarlabel", "");
-            this.dyn.trigger("uploading");
-            this.dyn.set("rerecordvisible", this.dyn.get("early-rerecord"));
-            if (this.dyn.get("early-rerecord"))
-                this.dyn.set("controlbar_active", true);
-            this.dyn.set("hovermessage", "");
-            this.dyn.set("message", this.dyn.string("uploading"));
-            var uploader = this.dyn._dataUploader;
-            this.listenOn(uploader, "success", function() {
-                Async.eventually(function() {
-                    if (this.destroyed())
-                        return;
-                    this._finished();
-                    this.next("Verifying");
-                }, this);
-            });
-            this.listenOn(uploader, "error", function(e) {
-                var bestError = this.dyn.string("uploading-failed");
-                try {
-                    e.forEach(function(ee) {
-                        for (var key in ee)
-                            if (this.dyn.string("upload-error-" + key))
-                                bestError = this.dyn.string("upload-error-" + key);
-                    }, this);
-                } catch (err) {}
-                this.dyn.set("player_active", false);
-                this.next("FatalError", {
-                    message: bestError,
-                    retry: this.dyn.recorderAttached() ? "Uploading" : "Initial"
-                });
-            });
-            this.listenOn(uploader, "progress", function(uploaded, total) {
-                this.dyn.trigger("upload_progress", uploaded, total);
-                if (total !== 0 && total > 0 && uploaded >= 0) {
-                    var up = Math.min(100, Math.round(uploaded / total * 100));
-                    if (!isNaN(up)) {
-                        this.dyn.set("message", this.dyn.string("uploading") + ": " + up + "%");
-                        this.dyn.set("playertopmessage", this.dyn.get("message"));
-                    }
-                }
-            });
-            if (this.dyn.get("localplayback") && ((this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback()) || this.dyn._audioFilePlaybackable)) {
-                if (this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback())
-                    this.dyn.set("playbacksource", this.dyn.recorder.localPlaybackSource());
-                else
-                    this.dyn.set("playbacksource", (window.URL || window.webkitURL).createObjectURL(this.dyn._audioFile));
-                this.dyn.set("loader_active", false);
-                this.dyn.set("message_active", false);
-                this.dyn.set("player_active", true);
-            }
-            this.dyn.set("start-upload-time", Time.now());
-            uploader.reset();
-            uploader.upload();
-        },
-
-        rerecord: function() {
-            this.dyn._detachRecorder();
-            this.dyn.trigger("rerecord");
-            this.dyn.set("recordermode", true);
-            this.next("Initial");
-        },
-
-        _finished: function() {
-            this.dyn.set("cancancel", false);
-            this.dyn.trigger("uploaded");
-            this.dyn.set("end-upload-time", Time.now());
-        }
-
-    });
-});
-
-Scoped.define("module:AudioRecorder.Dynamics.RecorderStates.Verifying", ["module:AudioRecorder.Dynamics.RecorderStates.State"], function (State, scoped) {
-    return State.extend({
-        scoped: scoped
-    }, {
-
-        dynamics: ["loader", "message"],
-
-        _started: function() {
-            this.dyn.set("loadlabel", "");
-            this.dyn.trigger("verifying");
-            this.dyn.set("message", this.dyn.string("verifying") + "...");
-            this.dyn.set("playertopmessage", this.dyn.get("message"));
-            if (this.dyn.get("localplayback") && ((this.dyn.recorder && this.dyn.recorder.supportsLocalPlayback()) || this.dyn._audioFilePlaybackable)) {
-                this.dyn.set("loader_active", false);
-                this.dyn.set("message_active", false);
-            } else {
-                this.dyn.set("rerecordvisible", this.dyn.get("early-rerecord"));
-                if (this.dyn.get("early-rerecord"))
-                    this.dyn.set("controlbar_active", true);
-            }
-            this.dyn._verifyRecording().success(function() {
-                this.dyn.trigger("verified");
-                this.dyn._detachRecorder();
-                if (this.dyn.get("recordings"))
-                    this.dyn.set("recordings", this.dyn.get("recordings") - 1);
-                this.dyn.set("message", "");
-                this.dyn.set("verified", true);
-                this.next("Player");
-            }, this).error(function() {
-                this.dyn.set("player_active", false);
-                this.next("FatalError", {
-                    message: this.dyn.string("verifying-failed"),
-                    retry: this.dyn.recorderAttached() ? "Verifying" : "Initial"
-                });
-            }, this);
-        },
-
-        rerecord: function() {
-            this.dyn._detachRecorder();
-            this.dyn.trigger("rerecord");
-            this.dyn.set("recordermode", true);
-            this.next("Initial");
-        }
-
-    });
-});
-
 
 }).call(Scoped);
 (function () {
@@ -34600,7 +32925,7 @@ Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], 
     return {
         "modern": {
             css: "ba-videoplayer-theme-modern",
-            tmplcontrolbar: "<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-container {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\" ba-if=\"{{title}}\">\n\t<p class=\"{{css}}-video-title\">\n\t\t{{title}}\n\t</p>\n</div>\n\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div tabindex=\"0\" data-selector=\"submit-video-button\"\n\t\t ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-leftbutton-container\"\n\t\t ba-if=\"{{submittable}}\" ba-click=\"{{submit()}}\"\n\t>\n        <div class=\"{{css}}-button-inner\">\n        \t{{string('submit-video')}}\n        </div>\n    </div>\n\n    <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-leftbutton-container\"\n\t\t ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n\t>\n    \t<div class=\"{{css}}-button-inner\">\n    \t\t<i class=\"{{css}}-icon-ccw\"></i>\n    \t</div>\n    </div>\n\n\t<div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-play\"\n\t\t ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n\t\t class=\"{{css}}-leftbutton-container\"\n\t\t ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<i class=\"{{css}}-icon-play\"></i>\n\t\t</div>\n\t</div>\n\n\t<div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-pause\"\n\t\t ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n\t\t class=\"{{css}}-leftbutton-container {{disablepause ? css + '-disabled' : ''}}\"\n\t\t ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<i class=\"{{css}}-icon-pause\"></i>\n\t\t</div>\n\t</div>\n\t<div class=\"{{css}}-time-container\">\n\t\t<div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}/{{formatTime(duration || position)}}</div>\n\t</div>\n\n\t<div tabindex=\"9\" data-selector=\"cc-button-container\"\n\t\t ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n\t\t ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n\t\t class=\"{{css}}-rightbutton-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n\t\t title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n\t\t ba-click=\"{{toggle_tracks()}}\"\n\t\t onmouseover=\"{{hover_cc(true)}}\"\n\t\t onmouseleave=\"{{hover_cc(false)}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n\t\t\t<i class=\"{{css}}-icon-subtitle\"></i>\n\t\t</div>\n\t</div>\n\n\n\t<div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n\t\t ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n\t\t onkeydown=\"{{tab_index_move(domEvent)}}\"\n\t\t class=\"{{css}}-rightbutton-container\"\n\t\tba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n\t\t\t<i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n\t\t</div>\n\t</div>\n\n\t<div tabindex=\"7\" data-selector=\"button-airplay\"\n\t\t ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-rightbutton-container {{css}}-airplay-container\" ba-show=\"{{airplaybuttonvisible}}\"\n\t\t ba-click=\"{{show_airplay_devices()}}\"\n\t>\n\t\t<svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n\t\t\t<!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n\t\t\t<title>Airplay</title>\n\t\t\t<desc>Airplay icon.</desc>\n\t\t\t<defs></defs>\n\t\t\t<g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n\t\t\t\t<path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n\t\t\t</g>\n\t\t</svg>\n\t</div>\n\n\t<div data-selector=\"button-chromecast\" class=\"{{css}}-rightbutton-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n\t\t<button tabindex=\"6\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n\t</div>\n\n\t<div tabindex=\"5\" data-selector=\"button-stream-label\"\n\t\t ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-rightbutton-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n\t\t ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<span class=\"{{css}}-button-text\">{{currentstream_label}}</span>\n\t\t</div>\n\t</div>\n\n\t<div class=\"{{css}}-volumebar\">\n\t\t<div tabindex=\"4\" data-selector=\"button-volume-bar\"\n\t\t\t ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n\t\t\t ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n\t\t\t onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-volumebar-inner\"\n\t\t\t onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n\t\t\t onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n\t\t\t onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n\t\t\t onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n\t\t>\n\t\t\t<div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n\t\t</div>\n\t</div>\n\n\t<div tabindex=\"3\" data-selector=\"button-icon-volume\"\n\t\t ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-rightbutton-container {{css}}-volume-button-container\"\n\t\t ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n\t\t</div>\n\t</div>\n\n\t<div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n\t\t<div tabindex=\"2\" data-selector=\"progress-bar-inner\"\n\t\t\t ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n\t\t\t ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n\t\t\t onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-progressbar-inner\"\n\t\t     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n\t\t     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n\t\t     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n\t\t     onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n\t\t>\n\t\t<div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n\t\t<div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\"></div>\n\t</div>\n</div>\n",
+            tmplcontrolbar: "<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-container {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\" ba-if=\"{{title}}\">\n\t<p class=\"{{css}}-video-title\">\n\t\t{{title}}\n\t</p>\n</div>\n\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div tabindex=\"0\" data-selector=\"submit-video-button\"\n\t\t ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-leftbutton-container\"\n\t\t ba-if=\"{{submittable}}\" ba-click=\"{{submit()}}\"\n\t>\n        <div class=\"{{css}}-button-inner\">\n        \t{{string('submit-video')}}\n        </div>\n    </div>\n\n    <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-leftbutton-container\"\n\t\t ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n\t>\n    \t<div class=\"{{css}}-button-inner\">\n    \t\t<i class=\"{{css}}-icon-ccw\"></i>\n    \t</div>\n    </div>\n\n\t<div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-play\"\n\t\t ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n\t\t class=\"{{css}}-leftbutton-container\"\n\t\t ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<i class=\"{{css}}-icon-play\"></i>\n\t\t</div>\n\t</div>\n\n\t<div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-pause\"\n\t\t ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n\t\t onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n\t\t class=\"{{css}}-leftbutton-container {{disablepause ? css + '-disabled' : ''}}\"\n\t\t ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<i class=\"{{css}}-icon-pause\"></i>\n\t\t</div>\n\t</div>\n\t<div class=\"{{css}}-time-container\">\n\t\t<div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}/{{formatTime(duration || position)}}</div>\n\t</div>\n\n\t<div tabindex=\"9\" data-selector=\"cc-button-container\"\n\t\t ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n\t\t ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n\t\t class=\"{{css}}-rightbutton-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n\t\t title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n\t\t ba-click=\"{{toggle_tracks()}}\"\n\t\t onmouseover=\"{{hover_cc(true)}}\"\n\t\t onmouseleave=\"{{hover_cc(false)}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n\t\t\t<i class=\"{{css}}-icon-subtitle\"></i>\n\t\t</div>\n\t</div>\n\n\n\t<div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n\t\t ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n\t\t onkeydown=\"{{tab_index_move(domEvent)}}\"\n\t\t class=\"{{css}}-rightbutton-container\"\n\t\tba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n\t\t\t<i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n\t\t</div>\n\t</div>\n\n\t<div tabindex=\"7\" data-selector=\"button-airplay\"\n\t\t ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-rightbutton-container {{css}}-airplay-container\" ba-show=\"{{airplaybuttonvisible}}\"\n\t\t ba-click=\"{{show_airplay_devices()}}\"\n\t>\n\t\t<svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n\t\t\t\n\t\t\t<title>Airplay</title>\n\t\t\t<desc>Airplay icon.</desc>\n\t\t\t<defs></defs>\n\t\t\t<g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n\t\t\t\t<path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n\t\t\t</g>\n\t\t</svg>\n\t</div>\n\n\t<div data-selector=\"button-chromecast\" class=\"{{css}}-rightbutton-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n\t\t<button tabindex=\"6\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n\t</div>\n\n\t<div tabindex=\"5\" data-selector=\"button-stream-label\"\n\t\t ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-rightbutton-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n\t\t ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<span class=\"{{css}}-button-text\">{{currentstream_label}}</span>\n\t\t</div>\n\t</div>\n\n\t<div class=\"{{css}}-volumebar\">\n\t\t<div tabindex=\"4\" data-selector=\"button-volume-bar\"\n\t\t\t ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n\t\t\t ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n\t\t\t onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-volumebar-inner\"\n\t\t\t onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n\t\t\t onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n\t\t\t onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n\t\t\t onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n\t\t>\n\t\t\t<div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n\t\t</div>\n\t</div>\n\n\t<div tabindex=\"3\" data-selector=\"button-icon-volume\"\n\t\t ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n\t\t class=\"{{css}}-rightbutton-container {{css}}-volume-button-container\"\n\t\t ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n\t>\n\t\t<div class=\"{{css}}-button-inner\">\n\t\t\t<i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n\t\t</div>\n\t</div>\n\n\t<div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n\t\t<div tabindex=\"2\" data-selector=\"progress-bar-inner\"\n\t\t\t ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n\t\t\t ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n\t\t\t onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-progressbar-inner\"\n\t\t     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n\t\t     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n\t\t     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n\t\t     onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n\t\t>\n\t\t<div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n\t\t<div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\"></div>\n\t</div>\n</div>\n",
             cssloader: ie8 ? "ba-videoplayer" : "",
             cssmessage: "ba-videoplayer",
             cssplaybutton: ie8 ? "ba-videoplayer" : ""
@@ -34661,7 +32986,7 @@ Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], 
         "cube": {
             css: "ba-videoplayer-cube-theme",
             csstheme: "ba-videoplayer-cube-theme",
-            tmplcontrolbar: "\n<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-block {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\" ba-if=\"{{title}}\">\n    <p class=\"{{css}}-video-title\">\n        {{title}}\n    </p>\n</div>\n\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-left-block\">\n\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n             ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\" ba-click=\"{{submit()}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n             ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if=\"{{rerecordable}}\"\n             ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-ccw\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-play\"\n             ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\"\n             ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-play\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1 }}\" data-selector=\"button-icon-pause\"\n             ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n             ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-pause\"></i>\n            </div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-right-block\">\n        <div class=\"{{css}}-button-container {{css}}-timer-container\">\n            <div class=\"{{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n            </div>\n            <p> / </p>\n            <div class=\"{{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n        </div>\n\n        <div tabindex=\"3\" data-selector=\"button-icon-volume\"\n             ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\"\n             ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\">\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-volumebar\">\n            <div tabindex=\"4\" data-selector=\"button-volume-bar\"\n                 ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                 ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                 onmouseout=\"this.blur()\"\n                 class=\"{{css}}-volumebar-inner\"\n                 onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                 onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmousemove=\"{{progressUpdateVolume(domEvent)}}\">\n                <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n            </div>\n        </div>\n\n        <div tabindex=\"5\" data-selector=\"button-stream-label\"\n             ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n             ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                <div class=\"{{css}}-button-text {{css}}-stream-label\">\n                    <span>{{currentstream_label}}</span>\n                </div>\n            </div>\n        </div>\n\n        <div tabindex=\"6\" data-selector=\"button-airplay\"\n             ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{css}}-airplay-container\"\n             ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\">\n            <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                <!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n                <title>Airplay</title>\n                <desc>Airplay icon.</desc>\n                <defs></defs>\n                <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                    <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                </g>\n            </svg>\n        </div>\n\n        <div tabindex=\"7\" data-selector=\"button-chromecast\" onmouseout=\"this.blur()\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n             ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if={{fullscreen}}\n             ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n             onkeydown=\"{{tab_index_move(domEvent)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"9\" data-selector=\"cc-button-container\"\n             ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n             ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n             class=\"{{css}}-button-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n             title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n             ba-click=\"{{toggle_tracks()}}\"\n             onmouseover=\"{{hover_cc(true)}}\"\n             onmouseleave=\"{{hover_cc(false)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                <i class=\"{{css}}-icon-subtitle\"></i>\n            </div>\n        </div>\n\n    </div>\n\n    <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n        <div tabindex=\"2\" data-selector=\"progress-bar-inner\"\n             ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n             ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n             ba-hotkey:alt+right=\"{{seek(position + skipseconds * 3)}}\"\n             ba-hotkey:alt+left=\"{{seek(position - skipseconds * 3)}}\"\n             onmouseout=\"this.blur()\"\n             class=\"{{css}}-progressbar-inner\"\n             onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n             onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n             onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n             onmousemove=\"{{progressUpdatePosition(domEvent)}}\">\n\n            <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n            <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\"></div>\n        </div>\n    </div>\n\n</div>\n",
+            tmplcontrolbar: "\n<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-block {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\" ba-if=\"{{title}}\">\n    <p class=\"{{css}}-video-title\">\n        {{title}}\n    </p>\n</div>\n\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-left-block\">\n\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n             ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\" ba-click=\"{{submit()}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n             ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if=\"{{rerecordable}}\"\n             ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-ccw\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-play\"\n             ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\"\n             ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-play\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1 }}\" data-selector=\"button-icon-pause\"\n             ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n             ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-pause\"></i>\n            </div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-right-block\">\n        <div class=\"{{css}}-button-container {{css}}-timer-container\">\n            <div class=\"{{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n            </div>\n            <p> / </p>\n            <div class=\"{{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n        </div>\n\n        <div tabindex=\"3\" data-selector=\"button-icon-volume\"\n             ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\"\n             ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\">\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-volumebar\">\n            <div tabindex=\"4\" data-selector=\"button-volume-bar\"\n                 ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                 ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                 onmouseout=\"this.blur()\"\n                 class=\"{{css}}-volumebar-inner\"\n                 onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                 onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                 onmousemove=\"{{progressUpdateVolume(domEvent)}}\">\n                <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n            </div>\n        </div>\n\n        <div tabindex=\"5\" data-selector=\"button-stream-label\"\n             ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n             ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                <div class=\"{{css}}-button-text {{css}}-stream-label\">\n                    <span>{{currentstream_label}}</span>\n                </div>\n            </div>\n        </div>\n\n        <div tabindex=\"6\" data-selector=\"button-airplay\"\n             ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{css}}-airplay-container\"\n             ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\">\n            <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                \n                <title>Airplay</title>\n                <desc>Airplay icon.</desc>\n                <defs></defs>\n                <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                    <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                </g>\n            </svg>\n        </div>\n\n        <div tabindex=\"7\" data-selector=\"button-chromecast\" onmouseout=\"this.blur()\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n             ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container\" ba-if={{fullscreen}}\n             ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n             onkeydown=\"{{tab_index_move(domEvent)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"9\" data-selector=\"cc-button-container\"\n             ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n             ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n             class=\"{{css}}-button-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n             title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n             ba-click=\"{{toggle_tracks()}}\"\n             onmouseover=\"{{hover_cc(true)}}\"\n             onmouseleave=\"{{hover_cc(false)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                <i class=\"{{css}}-icon-subtitle\"></i>\n            </div>\n        </div>\n\n    </div>\n\n    <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n        <div tabindex=\"2\" data-selector=\"progress-bar-inner\"\n             ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n             ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n             ba-hotkey:alt+right=\"{{seek(position + skipseconds * 3)}}\"\n             ba-hotkey:alt+left=\"{{seek(position - skipseconds * 3)}}\"\n             onmouseout=\"this.blur()\"\n             class=\"{{css}}-progressbar-inner\"\n             onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n             onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n             onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n             onmousemove=\"{{progressUpdatePosition(domEvent)}}\">\n\n            <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n            <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\"></div>\n        </div>\n    </div>\n\n</div>\n",
             cssloader: ie8 ? "ba-videoplayer" : "",
             cssmessage: "ba-videoplayer",
             cssplaybutton: ie8 ? "ba-videoplayer" : ""
@@ -34679,7 +33004,7 @@ Scoped.extend("module:Assets.recorderthemes", ["dynamics:Parser"], function (Par
             css: "ba-videorecorder-theme-cube",
             cssmessage: "ba-videorecorder-theme-cube",
             cssloader: "ba-videorecorder",
-            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<div class=\"{{css}}-settings-front\">\n\n\t\t<!-- Popup Settings Selections, initially hidden, appear when click button for settings -->\n\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-bubble-info\">\n\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n                               type='radio'\n\t\t\t\t\t\t\t   name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t/>\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label tabindex=\"0\" ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t>\n\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n\t\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<!-- Control bar, footer part which holds all buttons -->\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"rerecord-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"cancel-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n            <div class=\"{{css}}-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t<div tabindex=\"0\" ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\" >\n\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t<i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n                    <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-right-section\">\n\n\t\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"record-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-timer-container\">\n\t\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel && !rerecordvisible}}\">\n\t\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"stop-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\" data-selector=\"skip-primary-button\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<div class=\"{{css}}-settings-front\">\n\n\t\t\n\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-bubble-info\">\n\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n                               type='radio'\n\t\t\t\t\t\t\t   name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t/>\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label tabindex=\"0\" ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t>\n\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n\t\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"rerecord-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"cancel-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n            <div class=\"{{css}}-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t<div tabindex=\"0\" ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\" >\n\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t<i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n                    <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-right-section\">\n\n\t\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"record-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-timer-container\">\n\t\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel && !rerecordvisible}}\">\n\t\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\" data-selector=\"stop-primary-button\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\" data-selector=\"skip-primary-button\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
             tmplimagegallery: "<div data-selector=\"image-gallery\" class=\"{{css}}-image-gallery-container\">\n\n\t<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t\t<div tabindex=\"0\" data-selector=\"slider-left-inner-button\"\n\t\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{left()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-left-open\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\" class=\"{{css}}-imagegallery-container\" data-gallery-container>\n\t\t<div tabindex=\"0\" data-selector=\"imagegallery-selected-image\"\n\t\t\t ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-image\"\n\t\t\t ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n\t\t\t onclick=\"{{select(image)}}\"\n\t\t>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t\t<div tabindex=\"0\" data-selector=\"slider-right-inner-button\"\n\t\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{right()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-right-open\"></i>\n\t\t</div>\n\t</div>\n\n</div>\n",
             tmplchooser: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t\t ba-click=\"{{click_action(action)}}\">\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t/>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>",
             tmplmessage: "<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div class=\"{{css}}-top-inner-message-container {{css}}-{{shortMessage ? 'short-message' : 'long-message'}}\">\n        <div class=\"{{css}}-first-inner-message-container\">\n            <div class=\"{{css}}-second-inner-message-container\">\n                <div class=\"{{css}}-third-inner-message-container\">\n                    <div class=\"{{css}}-fourth-inner-message-container\">\n                        <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n                            <p>\n                                {{message || \"\"}}\n                            </p>\n                            <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n                                <li>\n                                    <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                                        {{link.title}}\n                                    </a>\n                                </li>\n                            </ul>\n                        </div>\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n"
@@ -34732,7 +33057,7 @@ Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], 
         "space": {
             css: "ba-videoplayer-space-theme",
             csstheme: "ba-videoplayer-space-theme",
-            tmplcontrolbar: "<div class=\"{{css}}-video-title-container {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n    <div class=\"{{css}}-title\" ba-if=\"{{title}}\">\n        <p>{{title}}</p>\n    </div>\n\n    <div class=\"{{css}}-volumebar\">\n        <div tabindex=\"2\" data-selector=\"button-volume-bar\"\n             ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n             ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n             onmouseout=\"this.blur()\"\n             class=\"{{css}}-volumebar-inner\"\n             onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n             onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n             onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n             onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n        >\n            <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n        </div>\n    </div>\n\n    <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-volume\"\n         ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n         class=\"{{css}}-rightbutton-container\"\n         ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n    >\n        <div class=\"{{css}}-button-inner\">\n            <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n        </div>\n    </div>\n</div>\n\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-controlbar-footer\">\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n             ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               {{string('submit-video')}}\n           </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n             ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\" ba-if=\"{{rerecordable}}\"\n             ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               <i class=\"{{css}}-icon-ccw\"></i>\n           </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 3}}\" data-selector=\"button-icon-play\"\n             ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n             class=\"{{css}}-leftbutton-container\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               <i class=\"{{css}}-icon-play\"></i>\n           </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 3}}\" data-selector=\"button-icon-pause\"\n             ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n             class=\"{{css}}-leftbutton-container {{disablepause ? css + '-disabled' : ''}}\"\n             ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               <i class=\"{{css}}-icon-pause\"></i>\n           </div>\n        </div>\n\n        <div class=\"{{css}}-time-container\">\n           <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n        </div>\n\n        <div tabindex=\"9\" data-selector=\"cc-button-container\"\n             ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n             ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n             class=\"{{css}}-rightbutton-container {{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n             title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n             ba-click=\"{{toggle_tracks()}}\"\n             onmouseover=\"{{hover_cc(true)}}\"\n             onmouseleave=\"{{hover_cc(false)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                <i class=\"{{css}}-icon-subtitle\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n             ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent)}}\"\n             class=\"{{css}}-rightbutton-container\"\n             ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                <i class=\"{{css}}-icon-{{fullscreened ? 'resize-minimize' : 'resize-full'}}\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"7\" data-selector=\"button-airplay\"\n             ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-rightbutton-container {{css}}-airplay-container\"\n             ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n        >\n            <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                <!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n                <title>Airplay</title>\n                <desc>Airplay icon.</desc>\n                <defs></defs>\n                <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                    <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                </g>\n            </svg>\n        </div>\n\n        <div data-selector=\"button-chromecast\" class=\"{{css}}-rightbutton-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button tabindex=\"6\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"5\" data-selector=\"button-stream-label\"\n             ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-rightbutton-container\"\n             ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n        >\n           <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n               <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n           </div>\n        </div>\n\n        <div class=\"{{css}}-time-container {{css}}-rightbutton-container {{css}}-right-time-container\">\n           <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n        </div>\n\n        <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n           <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n                ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                onmouseout=\"this.blur()\"\n                class=\"{{css}}-progressbar-inner\"\n                onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n           >\n\n               <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n               <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                   <div class=\"{{css}}-progressbar-button\"></div>\n               </div>\n           </div>\n        </div>\n\n    </div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-video-title-container {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n    <div class=\"{{css}}-title\" ba-if=\"{{title}}\">\n        <p>{{title}}</p>\n    </div>\n\n    <div class=\"{{css}}-volumebar\">\n        <div tabindex=\"2\" data-selector=\"button-volume-bar\"\n             ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n             ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n             onmouseout=\"this.blur()\"\n             class=\"{{css}}-volumebar-inner\"\n             onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n             onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n             onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n             onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n        >\n            <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n        </div>\n    </div>\n\n    <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-volume\"\n         ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n         class=\"{{css}}-rightbutton-container\"\n         ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n    >\n        <div class=\"{{css}}-button-inner\">\n            <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n        </div>\n    </div>\n</div>\n\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-controlbar-footer\">\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n             ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               {{string('submit-video')}}\n           </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n             ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\" ba-if=\"{{rerecordable}}\"\n             ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               <i class=\"{{css}}-icon-ccw\"></i>\n           </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 3}}\" data-selector=\"button-icon-play\"\n             ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n             class=\"{{css}}-leftbutton-container\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               <i class=\"{{css}}-icon-play\"></i>\n           </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 3}}\" data-selector=\"button-icon-pause\"\n             ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n             class=\"{{css}}-leftbutton-container {{disablepause ? css + '-disabled' : ''}}\"\n             ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n        >\n           <div class=\"{{css}}-button-inner\">\n               <i class=\"{{css}}-icon-pause\"></i>\n           </div>\n        </div>\n\n        <div class=\"{{css}}-time-container\">\n           <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n        </div>\n\n        <div tabindex=\"9\" data-selector=\"cc-button-container\"\n             ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n             ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n             class=\"{{css}}-rightbutton-container {{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n             title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n             ba-click=\"{{toggle_tracks()}}\"\n             onmouseover=\"{{hover_cc(true)}}\"\n             onmouseleave=\"{{hover_cc(false)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                <i class=\"{{css}}-icon-subtitle\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n             ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent)}}\"\n             class=\"{{css}}-rightbutton-container\"\n             ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                <i class=\"{{css}}-icon-{{fullscreened ? 'resize-minimize' : 'resize-full'}}\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"7\" data-selector=\"button-airplay\"\n             ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-rightbutton-container {{css}}-airplay-container\"\n             ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n        >\n            <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                \n                <title>Airplay</title>\n                <desc>Airplay icon.</desc>\n                <defs></defs>\n                <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                    <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                </g>\n            </svg>\n        </div>\n\n        <div data-selector=\"button-chromecast\" class=\"{{css}}-rightbutton-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button tabindex=\"6\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"5\" data-selector=\"button-stream-label\"\n             ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-rightbutton-container\"\n             ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n        >\n           <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n               <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n           </div>\n        </div>\n\n        <div class=\"{{css}}-time-container {{css}}-rightbutton-container {{css}}-right-time-container\">\n           <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n        </div>\n\n        <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n           <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n                ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                onmouseout=\"this.blur()\"\n                class=\"{{css}}-progressbar-inner\"\n                onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n           >\n\n               <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n               <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                   <div class=\"{{css}}-progressbar-button\"></div>\n               </div>\n           </div>\n        </div>\n\n    </div>\n\n</div>\n",
             tmplplaybutton: "\n<div tabindex=\"0\" data-selector=\"play-button\"\n     ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n     onkeydown=\"{{tab_index_move(domEvent, null, 'player-toggle-overlay')}}\"\n     class=\"{{css}}-playbutton-container\" ba-click=\"{{play()}}\" title=\"{{string('tooltip')}}\"\n>\n\t<div class=\"{{css}}-playbutton-button\"></div>\n</div>\n\n<div class=\"{{css}}-rerecord-bar\" ba-if=\"{{rerecordable || submittable}}\">\n\t<div class=\"{{css}}-rerecord-frontbar\">\n        <div class=\"{{css}}-rerecord-button-container\" ba-if=\"{{submittable}}\">\n            <div tabindex=\"0\" data-selector=\"player-submit-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-rerecord-button\" onclick=\"{{submit()}}\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n        <div class=\"{{css}}-rerecord-button-container\" ba-if=\"{{rerecordable}}\">\n        \t<div tabindex=\"0\" data-selector=\"player-rerecord-button\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-rerecord-button\" onclick=\"{{rerecord()}}\">\n        \t\t{{string('rerecord')}}\n        \t</div>\n        </div>\n\t</div>\n</div>\n",
             tmplmessage: "<div class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div data-selector=\"message-block\" class=\"{{css}}-first-inner-message-container\">\n        <div class=\"{{css}}-second-inner-message-container\">\n            <div class=\"{{css}}-third-inner-message-container\">\n                <div class=\"{{css}}-fourth-inner-message-container\">\n                    <div class='{{css}}-message-message'>\n                        {{message || \"\"}}\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n",
             cssloader: ie8 ? "ba-videoplayer" : "",
@@ -34754,7 +33079,7 @@ Scoped.extend("module:Assets.recorderthemes", ["dynamics:Parser"], function (Par
             cssmessage: "ba-videorecorder",
             cssloader: "ba-videorecorder",
             tmpltopmessage: "<div class=\"{{css}}-topmessage-container\">\n    <div data-selector=\"recorder-topmessage-block\" class='{{css}}-topmessage-message'>\n        {{topmessage}}\n    </div>\n</div>\n",
-            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<div class=\"{{css}}-settings-front\">\n\n\t\t<!-- Popup Settings Selections, initially hidden, appear when click button for settings -->\n\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t\t<div class=\"{{css}}-bubble-info\">\n\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t/>\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label onclick=\"{{selectCamera(camera.id)}}\" ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\">\n\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t<ul data-selector=\"record-button-icon-cog\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n\t\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<!-- Control bar, footer part which holds all buttons -->\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div data-selector=\"cancel-primary-button\" class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\" onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n            <div class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-circle-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t<i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-circle-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n                    <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-right-section\">\n\n\t\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-timer-container\">\n\t\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel && !rerecordvisible}}\">\n\t\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\"\n\t\t\t\t\t class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </divi>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<div class=\"{{css}}-settings-front\">\n\n\t\t\n\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t\t<div class=\"{{css}}-bubble-info\">\n\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t/>\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label onclick=\"{{selectCamera(camera.id)}}\" ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\">\n\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t<ul data-selector=\"record-button-icon-cog\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n\t\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div data-selector=\"cancel-primary-button\" class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t class=\"{{css}}-button-primary\" onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n            <div class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-button-icon-cog\" class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-circle-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t<i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-circle-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n                    <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-right-section\">\n\n\t\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-timer-container\">\n\t\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel && !rerecordvisible}}\">\n\t\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\"\n\t\t\t\t\t class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </divi>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
             tmplimagegallery: "<div data-selector=\"image-gallery\" class=\"{{css}}-image-gallery-container\">\n\n\t<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-left-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{left()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-left-open\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\" class=\"{{css}}-imagegallery-container\" data-gallery-container>\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-image\"\n\t\t\t ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n\t\t\t onclick=\"{{select(image)}}\"\n\t\t>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-right-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{right()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-right-open\"></i>\n\t\t</div>\n\t</div>\n\n</div>\n",
             tmplchooser: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t\t ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t/>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>",
             tmplmessage: "<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div class=\"{{css}}-top-inner-message-container {{css}}-{{shortMessage ? 'short-message' : 'long-message'}}\">\n        <div class=\"{{css}}-first-inner-message-container\">\n            <div class=\"{{css}}-second-inner-message-container\">\n                <div class=\"{{css}}-third-inner-message-container\">\n                    <div class=\"{{css}}-fourth-inner-message-container\">\n                        <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n                            <p>\n                                {{message || \"\"}}\n                            </p>\n                            <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n                                <li>\n                                    <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                                        {{link.title}}\n                                    </a>\n                                </li>\n                            </ul>\n                        </div>\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n"
@@ -34808,7 +33133,7 @@ Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], 
         "minimalist": {
             css: "ba-videoplayer-minimalist-theme",
             csstheme: "ba-videoplayer-minimalist-theme",
-            tmplcontrolbar: "<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class='{{css}}-controlbar-header'>\n        <div class=\"{{css}}-controlbar-header-icons-block\">\n\n            <div class=\"{{css}}-right-block\">\n\n                <div tabindex=\"1\" data-selector=\"button-icon-resize-full\"\n                     ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n                     onkeydown=\"{{tab_index_move(domEvent)}}\"\n                     class=\"{{css}}-button-container\"\n                     ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n                >\n                    <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                        <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n                    </div>\n                </div>\n\n                <div tabindex=\"2\" data-selector=\"button-icon-volume\"\n                     ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                     class=\"{{css}}-button-container\" ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n                >\n                    <div class=\"{{css}}-button-inner\">\n                        <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-volumebar\">\n                    <div tabindex=\"3\" data-selector=\"button-volume-bar\"\n                         ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                         ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                         onmouseout=\"this.blur()\"\n                         class=\"{{css}}-volumebar-inner\"\n                         onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                         onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n                    >\n                        <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                    </div>\n                </div>\n\n            </div>\n\n        </div>\n\n\n        <div class=\"{{css}}-controlbar-header-title-block\" ba-if=\"{{title}}\">\n            <div class=\"{{css}}-title\"><p>{{title}}</p></div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-controlbar-footer\">\n\n        <div class=\"{{css}}-controlbar-top-block\">\n\n            <div tabindex=\"0\" data-selector=\"submit-video-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-video')}}\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : -1}}\" data-selector=\"button-icon-play\"\n                 ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-play\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : -1}}\" data-selector=\"button-icon-pause\"\n                 ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n                 class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n                 ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i tabindex=\"0\" class=\"{{css}}-icon-pause\"></i>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-middle-block\">\n\n            <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n                <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n                     ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                     ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                     onmouseout=\"this.blur()\"\n                     class=\"{{css}}-progressbar-inner\"\n                     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n                >\n\n                    <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n                    <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                        <div class=\"{{css}}-progressbar-button\"></div>\n                    </div>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-bottom-block\">\n            <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-player-rerecord\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-button-container {{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n                <p> / </p>\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n\n            <div tabindex=\"5\" data-selector=\"button-stream-label\"\n                 ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n                 ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                    <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n                </div>\n            </div>\n            <div tabindex=\"6\" data-selector=\"button-airplay\"\n                 ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-airplay-container\"\n                 ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n            >\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    <!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n\n            <div tabindex=\"7\" data-selector=\"button-chromecast\" onmouseout=\"this.blur()\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n                <button class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n            </div>\n\n            <div tabindex=\"8\" data-selector=\"cc-button-container\"\n                 ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n                 ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n                 ba-click=\"{{toggle_tracks()}}\"\n                 class=\"{{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n                 title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n                 onmouseover=\"{{hover_cc(true)}}\" onmouseleave=\"{{hover_cc(false)}}\"\n            >\n                <div class=\"{{css}}-subtitle-button-inner\">\n                    <i class=\"{{css}}-icon-subtitle\"></i>\n                </div>\n            </div>\n\n        </div>\n    </div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class='{{css}}-controlbar-header'>\n        <div class=\"{{css}}-controlbar-header-icons-block\">\n\n            <div class=\"{{css}}-right-block\">\n\n                <div tabindex=\"1\" data-selector=\"button-icon-resize-full\"\n                     ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n                     onkeydown=\"{{tab_index_move(domEvent)}}\"\n                     class=\"{{css}}-button-container\"\n                     ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n                >\n                    <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                        <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n                    </div>\n                </div>\n\n                <div tabindex=\"2\" data-selector=\"button-icon-volume\"\n                     ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                     class=\"{{css}}-button-container\" ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n                >\n                    <div class=\"{{css}}-button-inner\">\n                        <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-volumebar\">\n                    <div tabindex=\"3\" data-selector=\"button-volume-bar\"\n                         ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                         ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                         onmouseout=\"this.blur()\"\n                         class=\"{{css}}-volumebar-inner\"\n                         onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                         onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n                    >\n                        <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                    </div>\n                </div>\n\n            </div>\n\n        </div>\n\n\n        <div class=\"{{css}}-controlbar-header-title-block\" ba-if=\"{{title}}\">\n            <div class=\"{{css}}-title\"><p>{{title}}</p></div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-controlbar-footer\">\n\n        <div class=\"{{css}}-controlbar-top-block\">\n\n            <div tabindex=\"0\" data-selector=\"submit-video-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-video')}}\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : -1}}\" data-selector=\"button-icon-play\"\n                 ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-play\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : -1}}\" data-selector=\"button-icon-pause\"\n                 ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n                 class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n                 ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i tabindex=\"0\" class=\"{{css}}-icon-pause\"></i>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-middle-block\">\n\n            <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n                <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n                     ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                     ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                     onmouseout=\"this.blur()\"\n                     class=\"{{css}}-progressbar-inner\"\n                     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n                >\n\n                    <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n                    <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                        <div class=\"{{css}}-progressbar-button\"></div>\n                    </div>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-bottom-block\">\n            <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-player-rerecord\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-button-container {{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n                <p> / </p>\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n\n            <div tabindex=\"5\" data-selector=\"button-stream-label\"\n                 ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n                 ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                    <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n                </div>\n            </div>\n            <div tabindex=\"6\" data-selector=\"button-airplay\"\n                 ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-airplay-container\"\n                 ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n            >\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    \n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n\n            <div tabindex=\"7\" data-selector=\"button-chromecast\" onmouseout=\"this.blur()\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n                <button class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n            </div>\n\n            <div tabindex=\"8\" data-selector=\"cc-button-container\"\n                 ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n                 ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n                 ba-click=\"{{toggle_tracks()}}\"\n                 class=\"{{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n                 title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n                 onmouseover=\"{{hover_cc(true)}}\" onmouseleave=\"{{hover_cc(false)}}\"\n            >\n                <div class=\"{{css}}-subtitle-button-inner\">\n                    <i class=\"{{css}}-icon-subtitle\"></i>\n                </div>\n            </div>\n\n        </div>\n    </div>\n\n</div>\n",
             cssloader: ie8 ? "ba-videoplayer" : "",
             cssmessage: "ba-videoplayer",
             cssplaybutton: ie8 ? "ba-videoplayer" : ""
@@ -34828,7 +33153,7 @@ Scoped.extend("module:Assets.recorderthemes", ["dynamics:Parser"], function (Par
             cssmessage: "ba-videorecorder",
             cssloader: "ba-videorecorder",
             tmpltopmessage: "<div data-selector=\"recorder-topmessage-block\" class=\"{{css}}-topmessage-container\">\n    <div class='{{css}}-topmessage-message'>\n        {{topmessage}}\n    </div>\n</div>",
-            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<!-- Sidebar Settings -->\n\t<div class=\"{{css}}-settings-left-sidebar\">\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t<!-- Popup Settings Selections, initially hidden, appear when click button for settings -->\n\t\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings {{css}}-settings-button-container\">\n\n\t\t\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t\t<div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsopen}}\" >\n\t\t\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<input tabindex=\"0\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t/>\n\t\t\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t\t\t<label tabindex=\"0\" onmouseout=\"this.blur()\" onclick=\"{{selectCamera(camera.id)}}\">\n\t\t\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t</div>\n\n\t\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\n                    <div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsvisible && settingsopen && audio }}\">\n                        <ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n                            <li tabindex=\"0\"\n\t\t\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t\t\t>\n                                <input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n                                <span></span>\n                                <label>\n                                    {{microphone.label}}\n                                </label>\n                            </li>\n                        </ul>\n                    </div>\n\n                    <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n                    <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<div class=\"{{css}}-controlbar-middle-section\">\n\n\t\t<div class=\"{{css}}-timer-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<!-- Control bar, footer part which holds all buttons -->\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-primary-button-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t\n\t<div class=\"{{css}}-settings-left-sidebar\">\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\n\t\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings {{css}}-settings-button-container\">\n\n\t\t\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t\t<div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsopen}}\" >\n\t\t\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<input tabindex=\"0\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t/>\n\t\t\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t\t\t<label tabindex=\"0\" onmouseout=\"this.blur()\" onclick=\"{{selectCamera(camera.id)}}\">\n\t\t\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t</div>\n\n\t\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\n                    <div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsvisible && settingsopen && audio }}\">\n                        <ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n                            <li tabindex=\"0\"\n\t\t\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t\t\t>\n                                <input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n                                <span></span>\n                                <label>\n                                    {{microphone.label}}\n                                </label>\n                            </li>\n                        </ul>\n                    </div>\n\n                    <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n                    <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<div class=\"{{css}}-controlbar-middle-section\">\n\n\t\t<div class=\"{{css}}-timer-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-primary-button-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
             tmplimagegallery: "<div data-selector=\"image-gallery\" class=\"{{css}}-image-gallery-container\">\n\n\t<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-left-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{left()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-left-open\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\" class=\"{{css}}-imagegallery-container\" data-gallery-container>\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-image\"\n\t\t\t ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n\t\t\t onclick=\"{{select(image)}}\"\n\t\t>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-right-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{right()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-right-open\"></i>\n\t\t</div>\n\t</div>\n\n</div>\n",
             tmplchooser: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t\t ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t/>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\"\n\t\t\t\t   ba-if=\"{{action.icon}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>",
             tmplmessage: "<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div class=\"{{css}}-top-inner-message-container {{css}}-{{shortMessage ? 'short-message' : 'long-message'}}\">\n        <div class=\"{{css}}-first-inner-message-container\">\n            <div class=\"{{css}}-second-inner-message-container\">\n                <div class=\"{{css}}-third-inner-message-container\">\n                    <div class=\"{{css}}-fourth-inner-message-container\">\n                        <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n                            <p>\n                                {{message || \"\"}}\n                            </p>\n                            <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n                                <li>\n                                    <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                                        {{link.title}}\n                                    </a>\n                                </li>\n                            </ul>\n                        </div>\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n"
@@ -34874,12 +33199,83 @@ Scoped.binding('dynamics', 'root:BetaJS.Dynamics');
 Scoped.binding('module', 'root:BetaJS.MediaComponents');
 Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], function (Info, Parser) {
     var ie8 = Info.isInternetExplorer() && Info.internetExplorerVersion() <= 8;
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''": function (obj) { with (obj) { return activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''; } }, "toggle_fullscreen()": function (obj) { with (obj) { return toggle_fullscreen(); } }, "tab_index_move(domEvent)": function (obj) { with (obj) { return tab_index_move(domEvent); } }, "fullscreen": function (obj) { with (obj) { return fullscreen; } }, "fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video')": function (obj) { with (obj) { return fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video'); } }, "fullscreened ? 'small' : 'full'": function (obj) { with (obj) { return fullscreened ? 'small' : 'full'; } }, "toggle_volume()": function (obj) { with (obj) { return toggle_volume(); } }, "string(volume > 0 ? 'volume-mute' : 'volume-unmute')": function (obj) { with (obj) { return string(volume > 0 ? 'volume-mute' : 'volume-unmute'); } }, "css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off'))": function (obj) { with (obj) { return css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')); } }, "set_volume(volume + 0.1)": function (obj) { with (obj) { return set_volume(volume + 0.1); } }, "set_volume(volume - 0.1)": function (obj) { with (obj) { return set_volume(volume - 0.1); } }, "startUpdateVolume(domEvent)": function (obj) { with (obj) { return startUpdateVolume(domEvent); } }, "stopUpdateVolume(domEvent)": function (obj) { with (obj) { return stopUpdateVolume(domEvent); } }, "progressUpdateVolume(domEvent)": function (obj) { with (obj) { return progressUpdateVolume(domEvent); } }, "{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}": function (obj) { with (obj) { return {width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}; } }, "string('volume-button')": function (obj) { with (obj) { return string('volume-button'); } }, "title": function (obj) { with (obj) { return title; } }, "submit()": function (obj) { with (obj) { return submit(); } }, "submittable": function (obj) { with (obj) { return submittable; } }, "string('submit-video')": function (obj) { with (obj) { return string('submit-video'); } }, "skipinitial ? 0 : -1": function (obj) { with (obj) { return skipinitial ? 0 : -1; } }, "play()": function (obj) { with (obj) { return play(); } }, "tab_index_move(domEvent, null, 'button-icon-pause')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'button-icon-pause'); } }, "!playing": function (obj) { with (obj) { return !playing; } }, "string('play-video')": function (obj) { with (obj) { return string('play-video'); } }, "pause()": function (obj) { with (obj) { return pause(); } }, "tab_index_move(domEvent, null, 'button-icon-play')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'button-icon-play'); } }, "disablepause ? css + '-disabled' : ''": function (obj) { with (obj) { return disablepause ? css + '-disabled' : ''; } }, "playing": function (obj) { with (obj) { return playing; } }, "disablepause ? string('pause-video-disabled') : string('pause-video')": function (obj) { with (obj) { return disablepause ? string('pause-video-disabled') : string('pause-video'); } }, "disableseeking ? css + '-disabled' : ''": function (obj) { with (obj) { return disableseeking ? css + '-disabled' : ''; } }, "seek(position + skipseconds)": function (obj) { with (obj) { return seek(position + skipseconds); } }, "seek(position - skipseconds)": function (obj) { with (obj) { return seek(position - skipseconds); } }, "startUpdatePosition(domEvent)": function (obj) { with (obj) { return startUpdatePosition(domEvent); } }, "stopUpdatePosition(domEvent)": function (obj) { with (obj) { return stopUpdatePosition(domEvent); } }, "progressUpdatePosition(domEvent)": function (obj) { with (obj) { return progressUpdatePosition(domEvent); } }, "{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}": function (obj) { with (obj) { return {width: Math.round(duration ? cached / duration * 100 : 0) + '%'}; } }, "{width: Math.round(duration ? position / duration * 100 : 0) + '%'}": function (obj) { with (obj) { return {width: Math.round(duration ? position / duration * 100 : 0) + '%'}; } }, "string('video-progress')": function (obj) { with (obj) { return string('video-progress'); } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "string('rerecord-video')": function (obj) { with (obj) { return string('rerecord-video'); } }, "string('elapsed-time')": function (obj) { with (obj) { return string('elapsed-time'); } }, "formatTime(position)": function (obj) { with (obj) { return formatTime(position); } }, "string('total-time')": function (obj) { with (obj) { return string('total-time'); } }, "formatTime(duration || position)": function (obj) { with (obj) { return formatTime(duration || position); } }, "toggle_stream()": function (obj) { with (obj) { return toggle_stream(); } }, "streams.length > 1 && currentstream": function (obj) { with (obj) { return streams.length > 1 && currentstream; } }, "string('change-resolution')": function (obj) { with (obj) { return string('change-resolution'); } }, "currentstream_label": function (obj) { with (obj) { return currentstream_label; } }, "show_airplay_devices()": function (obj) { with (obj) { return show_airplay_devices(); } }, "airplaybuttonvisible": function (obj) { with (obj) { return airplaybuttonvisible; } }, "castbuttonvisble": function (obj) { with (obj) { return castbuttonvisble; } }, "toggle_tracks()": function (obj) { with (obj) { return toggle_tracks(); } }, "(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload": function (obj) { with (obj) { return (tracktags.length > 0 && tracktagssupport) || allowtexttrackupload; } }, "tracktextvisible ? 'active' : 'inactive'": function (obj) { with (obj) { return tracktextvisible ? 'active' : 'inactive'; } }, "tracktextvisible ? string('close-tracks') : string('show-tracks')": function (obj) { with (obj) { return tracktextvisible ? string('close-tracks') : string('show-tracks'); } }, "hover_cc(true)": function (obj) { with (obj) { return hover_cc(true); } }, "hover_cc(false)": function (obj) { with (obj) { return hover_cc(false); } }/**/ });
+    return {
+        "carrot": {
+            css: "ba-videoplayer-carrot-theme",
+            csstheme: "ba-videoplayer-carrot-theme",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class='{{css}}-controlbar-header'>\n        <div class=\"{{css}}-controlbar-header-icons-block\">\n\n            <div class=\"{{css}}-right-block\">\n\n                <div tabindex=\"1\" data-selector=\"button-icon-resize-full\"\n                     ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n                     onkeydown=\"{{tab_index_move(domEvent)}}\"\n                     class=\"{{css}}-button-container\"\n                     ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n                >\n                    <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                        <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n                    </div>\n                </div>\n\n                <div tabindex=\"2\" data-selector=\"button-icon-volume\"\n                     ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                     class=\"{{css}}-button-container\" ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n                >\n                    <div class=\"{{css}}-button-inner\">\n                        <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-volumebar\">\n                    <div tabindex=\"3\" data-selector=\"button-volume-bar\"\n                         ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                         ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                         onmouseout=\"this.blur()\"\n                         class=\"{{css}}-volumebar-inner\"\n                         onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                         onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n                    >\n                        <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                    </div>\n                </div>\n\n            </div>\n\n        </div>\n\n\n        <div class=\"{{css}}-controlbar-header-title-block\" ba-if=\"{{title}}\">\n            <div class=\"{{css}}-title\"><p>{{title}}</p></div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-controlbar-footer\">\n\n        <div class=\"{{css}}-controlbar-top-block\">\n\n            <div tabindex=\"0\" data-selector=\"submit-video-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-video')}}\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : -1}}\" data-selector=\"button-icon-play\"\n                 ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-play\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : -1}}\" data-selector=\"button-icon-pause\"\n                 ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n                 class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n                 ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i tabindex=\"0\" class=\"{{css}}-icon-pause\"></i>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-middle-block\">\n\n            <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n                <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n                     ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                     ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                     onmouseout=\"this.blur()\"\n                     class=\"{{css}}-progressbar-inner\"\n                     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n                >\n\n                    <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n                    <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                        <div class=\"{{css}}-progressbar-button\"></div>\n                    </div>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-bottom-block\">\n            <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-player-rerecord\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-button-container {{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n                <p> / </p>\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n\n            <div tabindex=\"5\" data-selector=\"button-stream-label\"\n                 ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{streams.length > 1 && currentstream}}\"\n                 ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                    <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n                </div>\n            </div>\n            <div tabindex=\"6\" data-selector=\"button-airplay\"\n                 ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-airplay-container\"\n                 ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n            >\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    \n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n\n            <div tabindex=\"7\" data-selector=\"button-chromecast\" onmouseout=\"this.blur()\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n                <button class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n            </div>\n\n            <div tabindex=\"8\" data-selector=\"cc-button-container\"\n                 ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n                 ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n                 ba-click=\"{{toggle_tracks()}}\"\n                 class=\"{{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n                 title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n                 onmouseover=\"{{hover_cc(true)}}\" onmouseleave=\"{{hover_cc(false)}}\"\n            >\n                <div class=\"{{css}}-subtitle-button-inner\">\n                    <i class=\"{{css}}-icon-subtitle\"></i>\n                </div>\n            </div>\n\n        </div>\n    </div>\n\n</div>\n",
+            cssloader: ie8 ? "ba-videoplayer" : "",
+            cssmessage: "ba-videoplayer",
+            cssplaybutton: ie8 ? "ba-videoplayer" : ""
+        }
+    };
+});
+
+Scoped.extend("module:Assets.recorderthemes", ["dynamics:Parser"], function (Parser) {
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "topmessage": function (obj) { with (obj) { return topmessage; } }/**/ });
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "settingsvisible": function (obj) { with (obj) { return settingsvisible; } }, "settingsopen": function (obj) { with (obj) { return settingsopen; } }, "cameras": function (obj) { with (obj) { return cameras; } }, "selectedcamera == camera.id": function (obj) { with (obj) { return selectedcamera == camera.id; } }, "selectCamera(camera.id)": function (obj) { with (obj) { return selectCamera(camera.id); } }, "camera.label": function (obj) { with (obj) { return camera.label; } }, "settingsopen=!settingsopen": function (obj) { with (obj) { return settingsopen=!settingsopen; } }, "settingsopen ? 'selected' : 'unselected'": function (obj) { with (obj) { return settingsopen ? 'selected' : 'unselected'; } }, "stopvisible": function (obj) { with (obj) { return stopvisible; } }, "controlbarlabel": function (obj) { with (obj) { return controlbarlabel; } }, "rerecordvisible": function (obj) { with (obj) { return rerecordvisible; } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "cancelvisible": function (obj) { with (obj) { return cancelvisible; } }, "cancel()": function (obj) { with (obj) { return cancel(); } }, "string('cancel')": function (obj) { with (obj) { return string('cancel'); } }, "recordvisible": function (obj) { with (obj) { return recordvisible; } }, "record()": function (obj) { with (obj) { return record(); } }, "stop()": function (obj) { with (obj) { return stop(); } }, "mintimeindicator ? css + '-disabled': ''": function (obj) { with (obj) { return mintimeindicator ? css + '-disabled': ''; } }, "mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')": function (obj) { with (obj) { return mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'); } }, "uploadcovershotvisible": function (obj) { with (obj) { return uploadcovershotvisible; } }, "hover(string('upload-covershot-tooltip'))": function (obj) { with (obj) { return hover(string('upload-covershot-tooltip')); } }, "unhover()": function (obj) { with (obj) { return unhover(); } }, "uploadCovershot(domEvent)": function (obj) { with (obj) { return uploadCovershot(domEvent); } }, "covershot_accept_string": function (obj) { with (obj) { return covershot_accept_string; } }, "string('upload-covershot')": function (obj) { with (obj) { return string('upload-covershot'); } }/**/ });
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "left()": function (obj) { with (obj) { return left(); } }, "images": function (obj) { with (obj) { return images; } }, "select(image)": function (obj) { with (obj) { return select(image); } }, "selectedindex == (snapshotindex + image.index)? css+'-selected-snapshot' : ''": function (obj) { with (obj) { return selectedindex == (snapshotindex + image.index)? css+'-selected-snapshot' : ''; } }, "snapshotindex": function (obj) { with (obj) { return snapshotindex; } }, "selectedindex": function (obj) { with (obj) { return selectedindex; } }, "image.index": function (obj) { with (obj) { return image.index; } }, "{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}": function (obj) { with (obj) { return {left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}; } }, "snapshotindex + image.index": function (obj) { with (obj) { return snapshotindex + image.index; } }, "hover(image)": function (obj) { with (obj) { return hover(image); } }, "right()": function (obj) { with (obj) { return right(); } }/**/ });
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "actions": function (obj) { with (obj) { return actions; } }/**/ });
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "click()": function (obj) { with (obj) { return click(); } }, "shortMessage ? 'short-message' : 'long-message'": function (obj) { with (obj) { return shortMessage ? 'short-message' : 'long-message'; } }, "message_uploading": function (obj) { with (obj) { return message_uploading; } }, "message || \"\"": function (obj) { with (obj) { return message || ""; } }, "links && links.length > 0": function (obj) { with (obj) { return links && links.length > 0; } }, "links": function (obj) { with (obj) { return links; } }, "linkClick(link)": function (obj) { with (obj) { return linkClick(link); } }, "link.title": function (obj) { with (obj) { return link.title; } }/**/ });
+    return {
+        "carrot": {
+            css: "ba-videorecorder-theme-carrot",
+            cssmessage: "ba-videorecorder",
+            cssloader: "ba-videorecorder",
+            tmpltopmessage: "<div data-selector=\"recorder-topmessage-block\" class=\"{{css}}-topmessage-container\">\n    <div class='{{css}}-topmessage-message'>\n        {{topmessage}}\n    </div>\n</div>",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t\n\t<div class=\"{{css}}-settings-right-sidebar\">\n\n\t\t<div class=\"{{css}}-controlbar-right-section\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\n\t\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings {{css}}-settings-button-container\">\n\n\t\t\t\t<div data-selector=\"settings-list-front\" class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t\t<div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsopen}}\" >\n\t\t\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<input tabindex=\"0\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\" onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t/>\n\t\t\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t\t\t<label tabindex=\"0\" onmouseout=\"this.blur()\" onclick=\"{{selectCamera(camera.id)}}\">\n\t\t\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t</div>\n\n\t\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<div class=\"{{css}}-controlbar-middle-section\">\n\n\t\t<div class=\"{{css}}-timer-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-record-timer {{css}}-button-primary\">\n\t\t\t\t\t<i class=\"{{css}}-icon-circle\"></i>&nbsp;{{controlbarlabel}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary {{css}}-rerecord-button\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t>\n          <i class=\"{{css}}-icon-rerecord\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-primary-button-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary {{css}}-button-record-start\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{css}}-button-record-stop {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t>\n          <i class=\"{{css}}-icon-check\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
+            tmplimagegallery: "<div data-selector=\"image-gallery\" class=\"{{css}}-image-gallery-container\">\n\n\t<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-left-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{left()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-left-dir\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\" class=\"{{css}}-imagegallery-container\" data-gallery-container>\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-image {{ selectedindex == (snapshotindex + image.index)? css+'-selected-snapshot' : '' }}\"\n\t\t\t data-spanshotindex=\"{{snapshotindex}}\"\n\t\t\t data-selectedindex=\"{{selectedindex}}\"\n\t\t\t data-imageindex=\"{{image.index}}\"\n\t\t\t ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n\t\t\t data-index=\"{{snapshotindex + image.index}}\"\n\t\t\t onmouseover=\"{{hover(image)}}\"\n\t\t\t onclick=\"{{select(image)}}\"\n\t\t>\n\t\t<i class=\"{{css}}-icon-check\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-right-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{right()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-right-dir\"></i>\n\t\t</div>\n\t</div>\n\n</div>\n",
+            tmplchooser: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t\n\t\t</div>\n\t</div>\n</div>",
+            tmplmessage: "<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div class=\"{{css}}-top-inner-message-container {{css}}-{{shortMessage ? 'short-message' : 'long-message'}}\">\n        <div class=\"{{css}}-first-inner-message-container\">\n            <div class=\"{{css}}-second-inner-message-container\">\n                <div class=\"{{css}}-third-inner-message-container\">\n                    <div class=\"{{css}}-fourth-inner-message-container\">\n                        <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n                            <p>\n                                <i ba-if=\"{{message_uploading}}\" class=\"{{css}}-icon-uploading\"></i>\n                                {{message || \"\"}}\n                            </p>\n                            <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n                                <li>\n                                    <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                                        {{link.title}}\n                                    </a>\n                                </li>\n                            </ul>\n                        </div>\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n"
+        }
+    };
+});
+
+Scoped.extend("module:Assets.imageviewerthemes", ["browser:Info","dynamics:Parser"], function (Info, Parser) {
+    var ie8 = Info.isInternetExplorer() && Info.internetExplorerVersion() <= 8;
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''": function (obj) { with (obj) { return activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''; } }, "toggle_fullscreen()": function (obj) { with (obj) { return toggle_fullscreen(); } }, "tab_index_move(domEvent)": function (obj) { with (obj) { return tab_index_move(domEvent); } }, "fullscreen": function (obj) { with (obj) { return fullscreen; } }, "fullscreened ? string('exit-fullscreen-image') : string('fullscreen-image')": function (obj) { with (obj) { return fullscreened ? string('exit-fullscreen-image') : string('fullscreen-image'); } }, "fullscreened ? 'small' : 'full'": function (obj) { with (obj) { return fullscreened ? 'small' : 'full'; } }, "title": function (obj) { with (obj) { return title; } }, "submit()": function (obj) { with (obj) { return submit(); } }, "submittable": function (obj) { with (obj) { return submittable; } }, "string('submit-image')": function (obj) { with (obj) { return string('submit-image'); } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "string('rerecord-image')": function (obj) { with (obj) { return string('rerecord-image'); } }/**/ });
+    return {
+        "carrot": {
+            css: "ba-imageviewer-carrot-theme",
+            csstheme: "ba-imageviewer-carrot-theme",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class='{{css}}-controlbar-header'>\n        <div class=\"{{css}}-controlbar-header-icons-block\">\n\n            <div class=\"{{css}}-right-block\">\n\n                <div tabindex=\"1\" data-selector=\"button-icon-resize-full\"\n                     ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n                     onkeydown=\"{{tab_index_move(domEvent)}}\"\n                     class=\"{{css}}-button-container\"\n                     ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-image') : string('fullscreen-image') }}\"\n                >\n                    <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                        <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n                    </div>\n                </div>\n\n            </div>\n\n        </div>\n\n\n        <div class=\"{{css}}-controlbar-header-title-block\" ba-if=\"{{title}}\">\n            <div class=\"{{css}}-title\"><p>{{title}}</p></div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-controlbar-footer\">\n\n        <div class=\"{{css}}-controlbar-top-block\">\n\n            <div tabindex=\"0\" data-selector=\"submit-image-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-image')}}\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-bottom-block\">\n            <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-player-rerecord\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-image')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n        </div>\n    </div>\n\n</div>\n",
+            cssloader: ie8 ? "ba-imageviewer" : "",
+            cssmessage: "ba-imageviewer"
+        }
+    };
+});
+
+Scoped.extend("module:Assets.audioplayerthemes", ["browser:Info","dynamics:Parser"], function (Info, Parser) {
+    var ie8 = Info.isInternetExplorer() && Info.internetExplorerVersion() <= 8;
+    Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "toggle_volume()": function (obj) { with (obj) { return toggle_volume(); } }, "string(volume > 0 ? 'volume-mute' : 'volume-unmute')": function (obj) { with (obj) { return string(volume > 0 ? 'volume-mute' : 'volume-unmute'); } }, "css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off'))": function (obj) { with (obj) { return css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')); } }, "set_volume(volume + 0.1)": function (obj) { with (obj) { return set_volume(volume + 0.1); } }, "set_volume(volume - 0.1)": function (obj) { with (obj) { return set_volume(volume - 0.1); } }, "startUpdateVolume(domEvent)": function (obj) { with (obj) { return startUpdateVolume(domEvent); } }, "stopUpdateVolume(domEvent)": function (obj) { with (obj) { return stopUpdateVolume(domEvent); } }, "progressUpdateVolume(domEvent)": function (obj) { with (obj) { return progressUpdateVolume(domEvent); } }, "{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}": function (obj) { with (obj) { return {width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}; } }, "string('volume-button')": function (obj) { with (obj) { return string('volume-button'); } }, "title": function (obj) { with (obj) { return title; } }, "submit()": function (obj) { with (obj) { return submit(); } }, "submittable": function (obj) { with (obj) { return submittable; } }, "string('submit-audio')": function (obj) { with (obj) { return string('submit-audio'); } }, "play()": function (obj) { with (obj) { return play(); } }, "tab_index_move(domEvent, null, 'button-icon-pause')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'button-icon-pause'); } }, "!playing": function (obj) { with (obj) { return !playing; } }, "string('play-audio')": function (obj) { with (obj) { return string('play-audio'); } }, "pause()": function (obj) { with (obj) { return pause(); } }, "tab_index_move(domEvent, null, 'button-icon-play')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'button-icon-play'); } }, "disablepause ? css + '-disabled' : ''": function (obj) { with (obj) { return disablepause ? css + '-disabled' : ''; } }, "playing": function (obj) { with (obj) { return playing; } }, "disablepause ? string('pause-audio-disabled') : string('pause-audio')": function (obj) { with (obj) { return disablepause ? string('pause-audio-disabled') : string('pause-audio'); } }, "disableseeking ? css + '-disabled' : ''": function (obj) { with (obj) { return disableseeking ? css + '-disabled' : ''; } }, "seek(position + skipseconds)": function (obj) { with (obj) { return seek(position + skipseconds); } }, "seek(position - skipseconds)": function (obj) { with (obj) { return seek(position - skipseconds); } }, "startUpdatePosition(domEvent)": function (obj) { with (obj) { return startUpdatePosition(domEvent); } }, "stopUpdatePosition(domEvent)": function (obj) { with (obj) { return stopUpdatePosition(domEvent); } }, "progressUpdatePosition(domEvent)": function (obj) { with (obj) { return progressUpdatePosition(domEvent); } }, "{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}": function (obj) { with (obj) { return {width: Math.round(duration ? cached / duration * 100 : 0) + '%'}; } }, "{width: Math.round(duration ? position / duration * 100 : 0) + '%'}": function (obj) { with (obj) { return {width: Math.round(duration ? position / duration * 100 : 0) + '%'}; } }, "string('audio-progress')": function (obj) { with (obj) { return string('audio-progress'); } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "string('rerecord-audio')": function (obj) { with (obj) { return string('rerecord-audio'); } }, "string('elapsed-time')": function (obj) { with (obj) { return string('elapsed-time'); } }, "formatTime(position)": function (obj) { with (obj) { return formatTime(position); } }, "string('total-time')": function (obj) { with (obj) { return string('total-time'); } }, "formatTime(duration || position)": function (obj) { with (obj) { return formatTime(duration || position); } }/**/ });
+    return {
+        "carrot": {
+            css: "ba-audioplayer-carrot-theme",
+            csstheme: "ba-audioplayer-carrot-theme",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard \">\n\n    <div class='{{css}}-controlbar-header'>\n        <div class=\"{{css}}-controlbar-header-icons-block\">\n\n            <div class=\"{{css}}-right-block\">\n\n                <div tabindex=\"2\" data-selector=\"button-icon-volume\"\n                     ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                     class=\"{{css}}-button-container\" ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n                >\n                    <div class=\"{{css}}-button-inner\">\n                        <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-volumebar\">\n                    <div tabindex=\"3\" data-selector=\"button-volume-bar\"\n                         ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                         ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                         onmouseout=\"this.blur()\"\n                         class=\"{{css}}-volumebar-inner\"\n                         onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                         onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                         onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n                    >\n                        <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                    </div>\n                </div>\n\n            </div>\n\n        </div>\n\n\n        <div class=\"{{css}}-controlbar-header-title-block\" ba-if=\"{{title}}\">\n            <div class=\"{{css}}-title\"><p>{{title}}</p></div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-controlbar-footer\">\n\n        <div class=\"{{css}}-controlbar-top-block\">\n\n            <div tabindex=\"0\" data-selector=\"submit-audio-button\"\n                 ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-audio')}}\n                </div>\n            </div>\n\n            <div tabindex=\"0\" data-selector=\"button-icon-play\"\n                 ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n                 class=\"{{css}}-button-container\" ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-audio')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-play\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"0\" data-selector=\"button-icon-pause\"\n                 ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n                 class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n                 ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-audio-disabled') : string('pause-audio')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i tabindex=\"0\" class=\"{{css}}-icon-pause\"></i>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-middle-block\">\n\n            <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n                <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n                     ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                     ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                     onmouseout=\"this.blur()\"\n                     class=\"{{css}}-progressbar-inner\"\n                     onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                     onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                     onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n                >\n\n                    <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n                    <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('audio-progress')}}\">\n                        <div class=\"{{css}}-progressbar-button\"></div>\n                    </div>\n                </div>\n            </div>\n\n        </div>\n        <div class=\"{{css}}-controlbar-bottom-block\">\n            <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n                 ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container {{css}}-player-rerecord\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-audio')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-button-container {{css}}-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n                <p> / </p>\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n\n        </div>\n    </div>\n\n</div>\n",
+            cssloader: ie8 ? "ba-audioplayer" : "",
+            cssmessage: "ba-audioplayer",
+            cssplaybutton: ie8 ? "ba-audioplayer" : ""
+        }
+    };
+});
+
+
+}).call(Scoped);
+(function () {
+var Scoped = this.subScope();
+Scoped.binding('browser', 'root:BetaJS.Browser');
+Scoped.binding('dynamics', 'root:BetaJS.Dynamics');
+Scoped.binding('module', 'root:BetaJS.MediaComponents');
+Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], function (Info, Parser) {
+    var ie8 = Info.isInternetExplorer() && Info.internetExplorerVersion() <= 8;
     Parser.registerFunctions({ /**/"css": function (obj) { with (obj) { return css; } }, "activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''": function (obj) { with (obj) { return activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''; } }, "title": function (obj) { with (obj) { return title; } }, "submit()": function (obj) { with (obj) { return submit(); } }, "submittable": function (obj) { with (obj) { return submittable; } }, "string('submit-video')": function (obj) { with (obj) { return string('submit-video'); } }, "rerecord()": function (obj) { with (obj) { return rerecord(); } }, "rerecordable": function (obj) { with (obj) { return rerecordable; } }, "string('rerecord-video')": function (obj) { with (obj) { return string('rerecord-video'); } }, "skipinitial ? 0 : 1": function (obj) { with (obj) { return skipinitial ? 0 : 1; } }, "play()": function (obj) { with (obj) { return play(); } }, "tab_index_move(domEvent, null, 'button-icon-pause')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'button-icon-pause'); } }, "!playing": function (obj) { with (obj) { return !playing; } }, "string('play-video')": function (obj) { with (obj) { return string('play-video'); } }, "pause()": function (obj) { with (obj) { return pause(); } }, "tab_index_move(domEvent, null, 'button-icon-play')": function (obj) { with (obj) { return tab_index_move(domEvent, null, 'button-icon-play'); } }, "disablepause ? css + '-disabled' : ''": function (obj) { with (obj) { return disablepause ? css + '-disabled' : ''; } }, "playing": function (obj) { with (obj) { return playing; } }, "disablepause ? string('pause-video-disabled') : string('pause-video')": function (obj) { with (obj) { return disablepause ? string('pause-video-disabled') : string('pause-video'); } }, "toggle_volume()": function (obj) { with (obj) { return toggle_volume(); } }, "string(volume > 0 ? 'volume-mute' : 'volume-unmute')": function (obj) { with (obj) { return string(volume > 0 ? 'volume-mute' : 'volume-unmute'); } }, "css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off'))": function (obj) { with (obj) { return css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')); } }, "set_volume(volume + 0.1)": function (obj) { with (obj) { return set_volume(volume + 0.1); } }, "set_volume(volume - 0.1)": function (obj) { with (obj) { return set_volume(volume - 0.1); } }, "startVerticallyUpdateVolume(domEvent)": function (obj) { with (obj) { return startVerticallyUpdateVolume(domEvent); } }, "stopVerticallyUpdateVolume(domEvent)": function (obj) { with (obj) { return stopVerticallyUpdateVolume(domEvent); } }, "progressVerticallyUpdateVolume(domEvent)": function (obj) { with (obj) { return progressVerticallyUpdateVolume(domEvent); } }, "{height: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}": function (obj) { with (obj) { return {height: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}; } }, "string('volume-button')": function (obj) { with (obj) { return string('volume-button'); } }, "string('elapsed-time')": function (obj) { with (obj) { return string('elapsed-time'); } }, "formatTime(position)": function (obj) { with (obj) { return formatTime(position); } }, "toggle_fullscreen()": function (obj) { with (obj) { return toggle_fullscreen(); } }, "tab_index_move(domEvent)": function (obj) { with (obj) { return tab_index_move(domEvent); } }, "fullscreen": function (obj) { with (obj) { return fullscreen; } }, "fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video')": function (obj) { with (obj) { return fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video'); } }, "fullscreened ? 'small' : 'full'": function (obj) { with (obj) { return fullscreened ? 'small' : 'full'; } }, "toggle_tracks()": function (obj) { with (obj) { return toggle_tracks(); } }, "(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload": function (obj) { with (obj) { return (tracktags.length > 0 && tracktagssupport) || allowtexttrackupload; } }, "tracktextvisible ? 'active' : 'inactive'": function (obj) { with (obj) { return tracktextvisible ? 'active' : 'inactive'; } }, "tracktextvisible ? string('close-tracks') : string('show-tracks')": function (obj) { with (obj) { return tracktextvisible ? string('close-tracks') : string('show-tracks'); } }, "hover_cc(true)": function (obj) { with (obj) { return hover_cc(true); } }, "hover_cc(false)": function (obj) { with (obj) { return hover_cc(false); } }, "show_airplay_devices()": function (obj) { with (obj) { return show_airplay_devices(); } }, "airplaybuttonvisible": function (obj) { with (obj) { return airplaybuttonvisible; } }, "castbuttonvisble": function (obj) { with (obj) { return castbuttonvisble; } }, "toggle_stream()": function (obj) { with (obj) { return toggle_stream(); } }, "streams.length > 1 && currentstream": function (obj) { with (obj) { return streams.length > 1 && currentstream; } }, "string('change-resolution')": function (obj) { with (obj) { return string('change-resolution'); } }, "currentstream_label": function (obj) { with (obj) { return currentstream_label; } }, "string('total-time')": function (obj) { with (obj) { return string('total-time'); } }, "formatTime(duration || position)": function (obj) { with (obj) { return formatTime(duration || position); } }, "disableseeking ? css + '-disabled' : ''": function (obj) { with (obj) { return disableseeking ? css + '-disabled' : ''; } }, "seek(position + skipseconds)": function (obj) { with (obj) { return seek(position + skipseconds); } }, "seek(position - skipseconds)": function (obj) { with (obj) { return seek(position - skipseconds); } }, "startUpdatePosition(domEvent)": function (obj) { with (obj) { return startUpdatePosition(domEvent); } }, "stopUpdatePosition(domEvent)": function (obj) { with (obj) { return stopUpdatePosition(domEvent); } }, "progressUpdatePosition(domEvent)": function (obj) { with (obj) { return progressUpdatePosition(domEvent); } }, "{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}": function (obj) { with (obj) { return {width: Math.round(duration ? cached / duration * 100 : 0) + '%'}; } }, "{width: Math.round(duration ? position / duration * 100 : 0) + '%'}": function (obj) { with (obj) { return {width: Math.round(duration ? position / duration * 100 : 0) + '%'}; } }, "string('video-progress')": function (obj) { with (obj) { return string('video-progress'); } }/**/ });
     return {
         "theatre": {
             css: "ba-videoplayer-theatre-theme",
             csstheme: "ba-videoplayer-theatre-theme",
-            tmplcontrolbar: "<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-container {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\"  ba-if=\"{{title}}\">\n    <p class=\"{{css}}-video-title\">\n        {{title}}\n    </p>\n</div>\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-left-block\">\n\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n             ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\"\n             ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n             ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\"\n             ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\"\n             title=\"{{string('rerecord-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-ccw\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-play\"\n             ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n             class=\"{{css}}-button-container\"\n             ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-play\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-pause\"\n             ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n             class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n             ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-pause\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-volume-icon-container\">\n\n            <div tabindex=\"2\" data-selector=\"button-icon-volume\"\n                 ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\"\n                 ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-volumebar\">\n                <div tabindex=\"-1\" data-selector=\"button-volume-bar\"\n                     ba-hotkey:up=\"{{set_volume(volume + 0.1)}}\"\n                     ba-hotkey:down=\"{{set_volume(volume - 0.1)}}\"\n                     onmouseout=\"this.blur()\"\n                     class=\"{{css}}-volumebar-inner\"\n                     onmousedown=\"{{startVerticallyUpdateVolume(domEvent)}}\"\n                     onmouseup=\"{{stopVerticallyUpdateVolume(domEvent)}}\"\n                     onmouseleave=\"{{stopVerticallyUpdateVolume(domEvent)}}\"\n                     onmousemove=\"{{progressVerticallyUpdateVolume(domEvent)}}\"\n                >\n                    <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{height: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                </div>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-time-container\">\n            <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-right-block\">\n\n        <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n             ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent)}}\"\n             class=\"{{css}}-button-container {{css}}-fullscreen-icon-container\"\n             ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"7\" data-selector=\"cc-button-container\"\n             ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n             ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n             class=\"{{css}}-rightbutton-container {{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n             title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n             ba-click=\"{{toggle_tracks()}}\"\n             onmouseover=\"{{hover_cc(true)}}\"\n             onmouseleave=\"{{hover_cc(false)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                <i class=\"{{css}}-icon-subtitle\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"6\" data-selector=\"button-airplay\"\n             ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{css}}-airplay-container\"\n             ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n        >\n            <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                <!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n                <title>Airplay</title>\n                <desc>Airplay icon.</desc>\n                <defs></defs>\n                <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                    <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                </g>\n            </svg>\n        </div>\n\n        <div data-selector=\"button-chromecast\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button tabindex=\"0\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"5\" data-selector=\"button-stream-label\"\n             ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{css}}-stream-label-container\"\n             ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-time-container {{css}}-right-time-container\">\n            <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n        </div>\n\n    </div>\n\n    <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n        <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n             ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n             ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n             onmouseout=\"this.blur()\"\n             class=\"{{css}}-progressbar-inner\"\n             onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n             onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n             onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n             onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n        >\n\n            <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n            <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                <div class=\"{{css}}-progressbar-button\"></div>\n            </div>\n        </div>\n    </div>\n\n</div>\n",
+            tmplcontrolbar: "<div data-selector=\"video-title-block\" class=\"{{css}}-video-title-container {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\"  ba-if=\"{{title}}\">\n    <p class=\"{{css}}-video-title\">\n        {{title}}\n    </p>\n</div>\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-left-block\">\n\n        <div tabindex=\"0\" data-selector=\"submit-video-button\"\n             ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\"\n             ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                {{string('submit-video')}}\n            </div>\n        </div>\n\n        <div tabindex=\"0\" data-selector=\"button-icon-ccw\"\n             ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-leftbutton-container\"\n             ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\"\n             title=\"{{string('rerecord-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-ccw\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-play\"\n             ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n             class=\"{{css}}-button-container\"\n             ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-play\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"{{skipinitial ? 0 : 1}}\" data-selector=\"button-icon-pause\"\n             ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n             class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n             ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n        >\n            <div class=\"{{css}}-button-inner\">\n                <i class=\"{{css}}-icon-pause\"></i>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-volume-icon-container\">\n\n            <div tabindex=\"2\" data-selector=\"button-icon-volume\"\n                 ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\"\n                 ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-volumebar\">\n                <div tabindex=\"-1\" data-selector=\"button-volume-bar\"\n                     ba-hotkey:up=\"{{set_volume(volume + 0.1)}}\"\n                     ba-hotkey:down=\"{{set_volume(volume - 0.1)}}\"\n                     onmouseout=\"this.blur()\"\n                     class=\"{{css}}-volumebar-inner\"\n                     onmousedown=\"{{startVerticallyUpdateVolume(domEvent)}}\"\n                     onmouseup=\"{{stopVerticallyUpdateVolume(domEvent)}}\"\n                     onmouseleave=\"{{stopVerticallyUpdateVolume(domEvent)}}\"\n                     onmousemove=\"{{progressVerticallyUpdateVolume(domEvent)}}\"\n                >\n                    <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{height: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                </div>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-time-container\">\n            <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n        </div>\n    </div>\n\n    <div class=\"{{css}}-right-block\">\n\n        <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n             ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n             onkeydown=\"{{tab_index_move(domEvent)}}\"\n             class=\"{{css}}-button-container {{css}}-fullscreen-icon-container\"\n             ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"7\" data-selector=\"cc-button-container\"\n             ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n             ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n             class=\"{{css}}-rightbutton-container {{css}}-cc-button-container {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n             title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n             ba-click=\"{{toggle_tracks()}}\"\n             onmouseover=\"{{hover_cc(true)}}\"\n             onmouseleave=\"{{hover_cc(false)}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                <i class=\"{{css}}-icon-subtitle\"></i>\n            </div>\n        </div>\n\n        <div tabindex=\"6\" data-selector=\"button-airplay\"\n             ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{css}}-airplay-container\"\n             ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n        >\n            <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                \n                <title>Airplay</title>\n                <desc>Airplay icon.</desc>\n                <defs></defs>\n                <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                    <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                </g>\n            </svg>\n        </div>\n\n        <div data-selector=\"button-chromecast\" class=\"{{css}}-button-container {{css}}-cast-button-container\" ba-show=\"{{castbuttonvisble}}\">\n            <button tabindex=\"0\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n        </div>\n\n        <div tabindex=\"5\" data-selector=\"button-stream-label\"\n             ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n             class=\"{{css}}-button-container {{css}}-stream-label-container\"\n             ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n        >\n            <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-time-container {{css}}-right-time-container\">\n            <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n        </div>\n\n    </div>\n\n    <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n        <div tabindex=\"4\" data-selector=\"progress-bar-inner\"\n             ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n             ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n             onmouseout=\"this.blur()\"\n             class=\"{{css}}-progressbar-inner\"\n             onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n             onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n             onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n             onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n        >\n\n            <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n            <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                <div class=\"{{css}}-progressbar-button\"></div>\n            </div>\n        </div>\n    </div>\n\n</div>\n",
             cssloader: ie8 ? "ba-videoplayer" : "",
             cssmessage: "ba-videoplayer",
             cssplaybutton: ie8 ? "ba-videoplayer" : ""
@@ -34897,7 +33293,7 @@ Scoped.extend("module:Assets.recorderthemes", ["dynamics:Parser"], function (Par
             css: "ba-videorecorder-theme-theatre",
             cssmessage: "ba-videorecorder",
             cssloader: "ba-videorecorder",
-            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<div class=\"{{css}}-settings-front\">\n\n\t\t<!-- Popup Settings Selections, initially hidden, appear when click button for settings -->\n\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t\t<div class=\"{{css}}-bubble-info\">\n\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   type='radio' name='camera'\n\t\t\t\t\t\t\t   value=\"{{selectedcamera == camera.id}}\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t/>\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t>\n\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n\t\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<!-- Control bar, footer part which holds all buttons -->\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n            <div class=\"{{css}}-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t<i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n                    <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-right-section\">\n\n\t\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-timer-container\">\n\t\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel && !rerecordvisible}}\">\n\t\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\"\n\t\t\t\t\t class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<div class=\"{{css}}-settings-front\">\n\n\t\t\n\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings\" ba-show=\"{{settingsvisible && settingsopen}}\">\n\t\t\t<div class=\"{{css}}-bubble-info\">\n\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   type='radio' name='camera'\n\t\t\t\t\t\t\t   value=\"{{selectedcamera == camera.id}}\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t/>\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t>\n\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t\t<ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n\t\t\t\t\t<li tabindex=\"0\"\n\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t<label>\n\t\t\t\t\t\t\t{{microphone.label}}\n\t\t\t\t\t\t</label>\n\t\t\t\t\t</li>\n\t\t\t\t</ul>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n            <div class=\"{{css}}-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t</div>\n\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n\t\t\t\t\t<i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n\t\t\t\t<div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n\t\t\t\t\tonmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n\t\t\t\t\tonmouseleave=\"{{unhover()}}\">\n                    <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t\t<div class=\"{{css}}-controlbar-right-section\">\n\n\t\t\t<div class=\"{{css}}-rightbutton-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-timer-container\">\n\t\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel && !rerecordvisible}}\">\n\t\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\"\n\t\t\t\t\t class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
             tmplimagegallery: "<div data-selector=\"image-gallery\" class=\"{{css}}-image-gallery-container\">\n\n\t<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-left-inner-button\" class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{left()}}\">\n\t\t\t<i class=\"{{css}}-icon-left-open\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\" class=\"{{css}}-imagegallery-container\" data-gallery-container>\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-image\"\n\t\t\t ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n\t\t\t onclick=\"{{select(image)}}\">\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-right-inner-button\" class=\"{{css}}-imagegallery-button-inner\" onclick=\"{{right()}}\">\n\t\t\t<i class=\"{{css}}-icon-right-open\"></i>\n\t\t</div>\n\t</div>\n\n</div>\n",
             tmplchooser: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-chooser-button-{{action.index}}\"\n\t\t\t\t ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t/>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\" ba-if=\"{{action.icon}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>",
             tmplmessage: "<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div class=\"{{css}}-top-inner-message-container {{css}}-{{shortMessage ? 'short-message' : 'long-message'}}\">\n        <div class=\"{{css}}-first-inner-message-container\">\n            <div class=\"{{css}}-second-inner-message-container\">\n                <div class=\"{{css}}-third-inner-message-container\">\n                    <div class=\"{{css}}-fourth-inner-message-container\">\n                        <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n                            <p>\n                                {{message || \"\"}}\n                            </p>\n                            <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n                                <li>\n                                    <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                                        {{link.title}}\n                                    </a>\n                                </li>\n                            </ul>\n                        </div>\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n"
@@ -34948,7 +33344,7 @@ Scoped.extend("module:Assets.playerthemes", ["browser:Info","dynamics:Parser"], 
         "elevate": {
             css: "ba-videoplayer-elevate-theme",
             csstheme: "ba-videoplayer-elevate-theme",
-            tmplcontrolbar: "\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-top-block\">\n\n        <div class=\"{{css}}-top-left-block\">\n            <div class=\"{{css}}-time-container {{css}}-left-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-top-right-block\">\n\n            <div class=\"{{css}}-time-container {{css}}-right-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n\n        </div>\n\n        <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n            <div tabindex=\"{{skipinitial ? 2 : 1}}\"\n                 ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                 ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                 onmouseout=\"this.blur()\"\n                 data-selector=\"progress-bar-inner\" class=\"{{css}}-progressbar-inner\"\n                 onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                 onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                 onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                 onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n            >\n\n                <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n                <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                    <div class=\"{{css}}-progressbar-button-description\" style=\"display: none\">\n                        <div class=\"{{css}}-current-stream-screen-shot\">\n                            <img src=\"\"/>\n                        </div>\n                        <div class=\"{{css}}-time-container\">\n                            <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n                        </div>\n                    </div>\n                    <div class=\"{{css}}-progressbar-button\"></div>\n                </div>\n            </div>\n        </div>\n\n    </div>\n\n    <div class=\"{{css}}-bottom-block\">\n\n        <div class=\"{{css}}-left-block\">\n\n            <div tabindex=\"0\" ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"submit-video-button\" class=\"{{css}}-leftbutton-container\"\n                 ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-video')}}\n                </div>\n            </div>\n\n            <div tabindex=\"0\" ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-icon-ccw\" class=\"{{css}}-leftbutton-container\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : 2}}\" ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n                 data-selector=\"button-icon-play\" class=\"{{css}}-button-container\"\n                 ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-play\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : 2}}\" ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n                 data-selector=\"button-icon-pause\" class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n                 ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-pause\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"3\" ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-icon-volume\" class=\"{{css}}-button-container\"\n                 ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-volumebar\">\n                <div tabindex=\"4\"\n                     ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                     ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                     onmouseout=\"this.blur()\"\n                     data-selector=\"button-volume-bar\" class=\"{{css}}-volumebar-inner\"\n                     onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                     onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                     onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                     onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n                >\n                    <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                </div>\n            </div>\n\n        </div>\n\n        <div class=\"{{css}}-center-block\">\n            <div data-selector=\"video-title-block\" class=\"{{css}}-video-title-block\" ba-if=\"{{title}}\">\n                <p class=\"{{css}}-video-title\">\n                    {{title}}\n                </p>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-right-block\">\n\n            <div tabindex=\"5\" ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-stream-label\" class=\"{{css}}-button-container\"\n                 ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                    <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n                </div>\n            </div>\n\n            <div tabindex=\"6\" ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-airplay\" class=\"{{css}}-button-container {{css}}-airplay-container\"\n                 ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n            >\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    <!-- Generator: Sketch 3.3.2 (12043) - http://www.bohemiancoding.com/sketch -->\n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n\n            <div data-selector=\"button-chromecast\" class=\"{{css}}-button-container {{css}}-cast-button-container\"\n                 ba-show=\"{{castbuttonvisble}}\">\n                <button tabindex=\"7\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n            </div>\n\n            <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n                 ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\"\n                 ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                    <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"9\" data-selector=\"cc-button-container\"\n                 ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n                 ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n                 class=\"{{css}}-button-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n                 title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n                 ba-click=\"{{toggle_tracks()}}\"\n                 onmouseover=\"{{hover_cc(true)}}\"\n                 onmouseleave=\"{{hover_cc(false)}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                    <i class=\"{{css}}-icon-subtitle\"></i>\n                </div>\n            </div>\n\n        </div>\n\n    </div>\n</div>\n",
+            tmplcontrolbar: "\n<div class=\"{{css}}-dashboard {{activitydelta > 5000 && hideoninactivity ? (css + '-dashboard-hidden') : ''}}\">\n\n    <div class=\"{{css}}-top-block\">\n\n        <div class=\"{{css}}-top-left-block\">\n            <div class=\"{{css}}-time-container {{css}}-left-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-top-right-block\">\n\n            <div class=\"{{css}}-time-container {{css}}-right-time-container\">\n                <div class=\"{{css}}-time-value\" title=\"{{string('total-time')}}\">{{formatTime(duration || position)}}</div>\n            </div>\n\n        </div>\n\n        <div class=\"{{css}}-progressbar {{disableseeking ? css + '-disabled' : ''}}\">\n            <div tabindex=\"{{skipinitial ? 2 : 1}}\"\n                 ba-hotkey:right=\"{{seek(position + skipseconds)}}\"\n                 ba-hotkey:left=\"{{seek(position - skipseconds)}}\"\n                 onmouseout=\"this.blur()\"\n                 data-selector=\"progress-bar-inner\" class=\"{{css}}-progressbar-inner\"\n                 onmousedown=\"{{startUpdatePosition(domEvent)}}\"\n                 onmouseup=\"{{stopUpdatePosition(domEvent)}}\"\n                 onmouseleave=\"{{stopUpdatePosition(domEvent)}}\"\n                 onmousemove=\"{{progressUpdatePosition(domEvent)}}\"\n            >\n\n                <div class=\"{{css}}-progressbar-cache\" ba-styles=\"{{{width: Math.round(duration ? cached / duration * 100 : 0) + '%'}}}\"></div>\n                <div class=\"{{css}}-progressbar-position\" ba-styles=\"{{{width: Math.round(duration ? position / duration * 100 : 0) + '%'}}}\" title=\"{{string('video-progress')}}\">\n                    <div class=\"{{css}}-progressbar-button-description\" style=\"display: none\">\n                        <div class=\"{{css}}-current-stream-screen-shot\">\n                            <img src=\"\"/>\n                        </div>\n                        <div class=\"{{css}}-time-container\">\n                            <div class=\"{{css}}-time-value\" title=\"{{string('elapsed-time')}}\">{{formatTime(position)}}</div>\n                        </div>\n                    </div>\n                    <div class=\"{{css}}-progressbar-button\"></div>\n                </div>\n            </div>\n        </div>\n\n    </div>\n\n    <div class=\"{{css}}-bottom-block\">\n\n        <div class=\"{{css}}-left-block\">\n\n            <div tabindex=\"0\" ba-hotkey:space^enter=\"{{submit()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"submit-video-button\" class=\"{{css}}-leftbutton-container\"\n                 ba-if=\"{{submittable}}\"  ba-click=\"{{submit()}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    {{string('submit-video')}}\n                </div>\n            </div>\n\n            <div tabindex=\"0\" ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-icon-ccw\" class=\"{{css}}-leftbutton-container\"\n                 ba-if=\"{{rerecordable}}\" ba-click=\"{{rerecord()}}\" title=\"{{string('rerecord-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-ccw\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : 2}}\" ba-hotkey:space^enter=\"{{play()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-pause')}}\"\n                 data-selector=\"button-icon-play\" class=\"{{css}}-button-container\"\n                 ba-if=\"{{!playing}}\" ba-click=\"{{play()}}\" title=\"{{string('play-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-play\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"{{skipinitial ? 0 : 2}}\" ba-hotkey:space^enter=\"{{pause()}}\" onmouseout=\"this.blur()\"\n                 onkeydown=\"{{tab_index_move(domEvent, null, 'button-icon-play')}}\"\n                 data-selector=\"button-icon-pause\" class=\"{{css}}-button-container {{disablepause ? css + '-disabled' : ''}}\"\n                 ba-if=\"{{playing}}\" ba-click=\"{{pause()}}\" title=\"{{disablepause ? string('pause-video-disabled') : string('pause-video')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css}}-icon-pause\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"3\" ba-hotkey:space^enter=\"{{toggle_volume()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-icon-volume\" class=\"{{css}}-button-container\"\n                 ba-click=\"{{toggle_volume()}}\" title=\"{{string(volume > 0 ? 'volume-mute' : 'volume-unmute')}}\"\n            >\n                <div class=\"{{css}}-button-inner\">\n                    <i class=\"{{css + '-icon-volume-' + (volume >= 0.5 ? 'up' : (volume > 0 ? 'down' : 'off')) }}\"></i>\n                </div>\n            </div>\n\n            <div class=\"{{css}}-volumebar\">\n                <div tabindex=\"4\"\n                     ba-hotkey:right=\"{{set_volume(volume + 0.1)}}\"\n                     ba-hotkey:left=\"{{set_volume(volume - 0.1)}}\"\n                     onmouseout=\"this.blur()\"\n                     data-selector=\"button-volume-bar\" class=\"{{css}}-volumebar-inner\"\n                     onmousedown=\"{{startUpdateVolume(domEvent)}}\"\n                     onmouseup=\"{{stopUpdateVolume(domEvent)}}\"\n                     onmouseleave=\"{{stopUpdateVolume(domEvent)}}\"\n                     onmousemove=\"{{progressUpdateVolume(domEvent)}}\"\n                >\n                    <div class=\"{{css}}-volumebar-position\" ba-styles=\"{{{width: Math.ceil(1+Math.min(99, Math.round(volume * 100))) + '%'}}}\" title=\"{{string('volume-button')}}\"></div>\n                </div>\n            </div>\n\n        </div>\n\n        <div class=\"{{css}}-center-block\">\n            <div data-selector=\"video-title-block\" class=\"{{css}}-video-title-block\" ba-if=\"{{title}}\">\n                <p class=\"{{css}}-video-title\">\n                    {{title}}\n                </p>\n            </div>\n        </div>\n\n        <div class=\"{{css}}-right-block\">\n\n            <div tabindex=\"5\" ba-hotkey:space^enter=\"{{toggle_stream()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-stream-label\" class=\"{{css}}-button-container\"\n                 ba-if=\"{{streams.length > 1 && currentstream}}\" ba-click=\"{{toggle_stream()}}\" title=\"{{string('change-resolution')}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-stream-label-container\">\n                    <span class=\"{{css}}-button-text {{css}}-stream-label\">{{currentstream_label}}</span>\n                </div>\n            </div>\n\n            <div tabindex=\"6\" ba-hotkey:space^enter=\"{{show_airplay_devices()}}\" onmouseout=\"this.blur()\"\n                 data-selector=\"button-airplay\" class=\"{{css}}-button-container {{css}}-airplay-container\"\n                 ba-show=\"{{airplaybuttonvisible}}\" ba-click=\"{{show_airplay_devices()}}\"\n            >\n                <svg width=\"16px\" height=\"11px\" viewBox=\"0 0 16 11\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n                    \n                    <title>Airplay</title>\n                    <desc>Airplay icon.</desc>\n                    <defs></defs>\n                    <g stroke=\"none\" stroke-width=\"1\" fill-rule=\"evenodd\" sketch:type=\"MSPage\">\n                        <path d=\"M4,11 L12,11 L8,7 L4,11 Z M14.5454545,0 L1.45454545,0 C0.654545455,0 0,0.5625 0,1.25 L0,8.75 C0,9.4375 0.654545455,10 1.45454545,10 L4.36363636,10 L4.36363636,8.75 L1.45454545,8.75 L1.45454545,1.25 L14.5454545,1.25 L14.5454545,8.75 L11.6363636,8.75 L11.6363636,10 L14.5454545,10 C15.3454545,10 16,9.4375 16,8.75 L16,1.25 C16,0.5625 15.3454545,0 14.5454545,0 L14.5454545,0 Z\" sketch:type=\"MSShapeGroup\"></path>\n                    </g>\n                </svg>\n            </div>\n\n            <div data-selector=\"button-chromecast\" class=\"{{css}}-button-container {{css}}-cast-button-container\"\n                 ba-show=\"{{castbuttonvisble}}\">\n                <button tabindex=\"7\" class=\"{{css}}-gcast-button\" is=\"google-cast-button\"></button>\n            </div>\n\n            <div tabindex=\"8\" data-selector=\"button-icon-resize-full\"\n                 ba-hotkey:space^enter=\"{{toggle_fullscreen()}}\" onmouseout=\"this.blur()\"\n                 class=\"{{css}}-button-container\"\n                 ba-if=\"{{fullscreen}}\" ba-click=\"{{toggle_fullscreen()}}\" title=\"{{ fullscreened ? string('exit-fullscreen-video') : string('fullscreen-video') }}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-full-screen-btn-inner\">\n                    <i class=\"{{css}}-icon-resize-{{fullscreened ? 'small' : 'full'}}\"></i>\n                </div>\n            </div>\n\n            <div tabindex=\"9\" data-selector=\"cc-button-container\"\n                 ba-hotkey:space^enter=\"{{toggle_tracks()}}\" onmouseout=\"this.blur()\"\n                 ba-if=\"{{(tracktags.length > 0 && tracktagssupport) || allowtexttrackupload}}\"\n                 class=\"{{css}}-button-container  {{css}}-cc-{{tracktextvisible ? 'active' : 'inactive'}}\"\n                 title=\"{{ tracktextvisible ? string('close-tracks') : string('show-tracks')}}\"\n                 ba-click=\"{{toggle_tracks()}}\"\n                 onmouseover=\"{{hover_cc(true)}}\"\n                 onmouseleave=\"{{hover_cc(false)}}\"\n            >\n                <div class=\"{{css}}-button-inner {{css}}-subtitle-button-inner\">\n                    <i class=\"{{css}}-icon-subtitle\"></i>\n                </div>\n            </div>\n\n        </div>\n\n    </div>\n</div>\n",
             cssloader: ie8 ? "ba-videoplayer" : "",
             cssmessage: "ba-videoplayer",
             cssplaybutton: ie8 ? "ba-videoplayer" : ""
@@ -34968,7 +33364,7 @@ Scoped.extend("module:Assets.recorderthemes", ["dynamics:Parser"], function (Par
             cssmessage: "ba-videorecorder",
             cssloader: "ba-videorecorder",
             tmpltopmessage: "<div class=\"{{css}}-topmessage-container\">\n    <div data-selector=\"recorder-topmessage-block\" class='{{css}}-topmessage-message'>\n        {{topmessage}}\n    </div>\n</div>\n",
-            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t<!-- Sidebar Settings -->\n\t<div class=\"{{css}}-settings-left-sidebar\">\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t<!-- Popup Settings Selections, initially hidden, appear when click button for settings -->\n\t\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings {{css}}-settings-button-container\">\n\n\t\t\t\t<div class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t\t<div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsopen}}\" >\n\t\t\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\"\n\t\t\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t/>\n\t\t\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t>\n\t\t\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t</div>\n\n\t\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t\t</div>\n\n\t\t\t\t</div>\n\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\n                    <div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsvisible && settingsopen && audio }}\">\n                        <ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n                            <li tabindex=\"0\"\n\t\t\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t\t\t>\n                                <input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n                                <span></span>\n                                <label>\n                                    {{microphone.label}}\n                                </label>\n                            </li>\n                        </ul>\n                    </div>\n\n                    <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n                    <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<div class=\"{{css}}-controlbar-middle-section\">\n\n\t\t<div class=\"{{css}}-timer-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<!-- Control bar, footer part which holds all buttons -->\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-primary-button-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
+            tmplcontrolbar: "<div class=\"{{css}}-dashboard\">\n\n\t\n\t<div class=\"{{css}}-settings-left-sidebar\">\n\n\t\t<div class=\"{{css}}-controlbar-left-section\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\n\t\t\t<div data-selector=\"recorder-settings\" class=\"{{css}}-settings {{css}}-settings-button-container\">\n\n\t\t\t\t<div class=\"{{css}}-circle-button\" ba-show=\"{{settingsvisible}}\">\n\n\t\t\t\t\t<div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsopen}}\" >\n\t\t\t\t\t\t<ul data-selector=\"camera-settings\" ba-repeat=\"{{camera :: cameras}}\">\n\t\t\t\t\t\t\t<li>\n\t\t\t\t\t\t\t\t<input tabindex=\"0\"\n\t\t\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   type='radio' name='camera' value=\"{{selectedcamera == camera.id}}\"\n\t\t\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t/>\n\t\t\t\t\t\t\t\t<span></span>\n\t\t\t\t\t\t\t\t<label tabindex=\"0\"\n\t\t\t\t\t\t\t\t\t   ba-hotkey:space^enter=\"{{selectCamera(camera.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\t\t   onclick=\"{{selectCamera(camera.id)}}\"\n\t\t\t\t\t\t\t\t>\n\t\t\t\t\t\t\t\t\t{{camera.label}}\n\t\t\t\t\t\t\t\t</label>\n\t\t\t\t\t\t\t</li>\n\t\t\t\t\t\t</ul>\n\t\t\t\t\t</div>\n\n\t\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t\t ba-hotkey:space^enter=\"{{settingsopen=!settingsopen}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t data-selector=\"record-button-icon-cog\"\n\t\t\t\t\t\t class=\"{{css}}-button-inner {{css}}-button-circle-{{settingsopen ? 'selected' : 'unselected' }}\"\n\t\t\t\t\t\t onclick=\"{{settingsopen=!settingsopen}}\"\n\t\t\t\t\t\t onmouseenter=\"{{hover(string('settings'))}}\"\n\t\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t\t>\n\t\t\t\t\t\t<i class=\"{{css}}-icon-cog\"></i>\n\t\t\t\t\t</div>\n\n\t\t\t\t</div>\n\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!noaudio && !allowscreen}}\">\n\n                    <div class=\"{{css}}-bubble-info\" ba-show=\"{{settingsvisible && settingsopen && audio }}\">\n                        <ul data-selector=\"microphone-settings\" ba-repeat=\"{{microphone :: microphones}}\" ba-show=\"{{audio}}\">\n                            <li tabindex=\"0\"\n\t\t\t\t\t\t\t\tba-hotkey:space^enter=\"{{selectMicrophone(microphone.id)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t\t\t\tonclick=\"{{selectMicrophone(microphone.id)}}\"\n\t\t\t\t\t\t\t>\n                                <input type='radio' name='microphone' value=\"{{selectedmicrophone == microphone.id}}\" />\n                                <span></span>\n                                <label>\n                                    {{microphone.label}}\n                                </label>\n                            </li>\n                        </ul>\n                    </div>\n\n                    <div data-selector=\"record-button-icon-mic\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(microphonehealthy ? 'microphonehealthy' : 'microphoneunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-mic {{css}}-icon-state-{{microphonehealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n                <div class=\"{{css}}-circle-button\" ba-show=\"{{!novideo && !allowscreen}}\">\n                    <div data-selector=\"record-button-icon-videocam\" class=\"{{css}}-button-inner\"\n                         onmouseenter=\"{{hover(string(camerahealthy ? 'camerahealthy' : 'cameraunhealthy'))}}\"\n                         onmouseleave=\"{{unhover()}}\">\n                        <i class=\"{{css}}-icon-videocam {{css}}-icon-state-{{ camerahealthy ? 'good' : 'bad' }}\"></i>\n                    </div>\n                </div>\n\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t<div class=\"{{css}}-controlbar-middle-section\">\n\n\t\t<div class=\"{{css}}-timer-container\" ba-show=\"{{stopvisible}}\">\n\t\t\t<div class=\"{{css}}-label-container\" ba-show=\"{{controlbarlabel}}\">\n\t\t\t\t<div data-selector=\"record-label-block\" class=\"{{css}}-label {{css}}-button-primary\">\n\t\t\t\t\t{{controlbarlabel}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n\t</div>\n\n\t\n\t<div data-selector=\"controlbar\" class=\"{{css}}-controlbar\">\n\n\t\t<div class=\"{{css}}-controlbar-center-section\">\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{rerecordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{rerecord()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"rerecord-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{rerecord()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('rerecord-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('rerecord')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-button-container\" ba-show=\"{{cancelvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{cancel()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"cancel-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{cancel()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('cancel-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('cancel')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t\t<div class=\"{{css}}-primary-button-container\" ba-show=\"{{recordvisible}}\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{record()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"record-primary-button\" class=\"{{css}}-button-primary\"\n\t\t\t\t\t onclick=\"{{record()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(string('record-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('record')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\n\t\t</div>\n\n\t\t<div class=\"{{css}}-stop-container\" ba-show=\"{{stopvisible}}\">\n\n\t\t\t<div class=\"{{css}}-stop-button-container\">\n\t\t\t\t<div tabindex=\"0\"\n\t\t\t\t\t ba-hotkey:space^enter=\"{{stop()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t\t data-selector=\"stop-primary-button\" class=\"{{css}}-button-primary {{mintimeindicator ? css + '-disabled': ''}}\"\n\t\t\t\t\t title=\"{{mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip')}}\"\n\t\t\t\t\t onclick=\"{{stop()}}\"\n\t\t\t\t\t onmouseenter=\"{{hover(mintimeindicator ? string('stop-available-after').replace('%d', timeminlimit) : string('stop-tooltip'))}}\"\n\t\t\t\t\t onmouseleave=\"{{unhover()}}\"\n\t\t\t\t>\n\t\t\t\t\t{{string('stop')}}\n\t\t\t\t</div>\n\t\t\t</div>\n\t\t</div>\n\n        <div class=\"{{css}}-centerbutton-container\" ba-show=\"{{skipvisible}}\">\n            <div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{skip()}}\" onmouseout=\"this.blur()\"\n\t\t\t\t data-selector=\"skip-primary-button\" class=\"{{css}}-button-primary\"\n                 onclick=\"{{skip()}}\"\n                 onmouseenter=\"{{hover(string('skip-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\"\n\t\t\t>\n                {{string('skip')}}\n            </div>\n        </div>\n\n\n        <div class=\"{{css}}-rightbutton-container\" ba-if=\"{{uploadcovershotvisible}}\">\n            <div data-selector=\"covershot-primary-button\" class=\"{{css}}-button-primary\"\n                 onmouseenter=\"{{hover(string('upload-covershot-tooltip'))}}\"\n                 onmouseleave=\"{{unhover()}}\">\n                <input type=\"file\"\n                       class=\"{{css}}-chooser-file\"\n                       style=\"height:100px\"\n                       onchange=\"{{uploadCovershot(domEvent)}}\"\n                       accept=\"{{covershot_accept_string}}\" />\n                <span>\n                    {{string('upload-covershot')}}\n                </span>\n            </div>\n        </div>\n\n\t</div>\n\n</div>\n",
             tmplimagegallery: "<div data-selector=\"image-gallery\" class=\"{{css}}-image-gallery-container\">\n\n\t<div data-selector=\"slider-left-button\" class=\"{{css}}-imagegallery-leftbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^left=\"{{left()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-left-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{left()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-left-open\"></i>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"images-imagegallery-container\" ba-repeat=\"{{image::images}}\" class=\"{{css}}-imagegallery-container\" data-gallery-container>\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter=\"{{select(image)}}\" onmouseout=\"this.blur()\"\n\t\t\t class=\"{{css}}-imagegallery-image\"\n\t\t\t ba-styles=\"{{{left: image.left + 'px', top: image.top + 'px', width: image.width + 'px', height: image.height + 'px'}}}\"\n\t\t\t onclick=\"{{select(image)}}\"\n\t\t>\n\t\t</div>\n\t</div>\n\n\t<div data-selector=\"slider-right-button\" class=\"{{css}}-imagegallery-rightbutton\">\n\t\t<div tabindex=\"0\"\n\t\t\t ba-hotkey:space^enter^right=\"{{right()}}\" onmouseout=\"this.blur()\"\n\t\t\t data-selector=\"slider-right-inner-button\" class=\"{{css}}-imagegallery-button-inner\"\n\t\t\t onclick=\"{{right()}}\"\n\t\t>\n\t\t\t<i class=\"{{css}}-icon-right-open\"></i>\n\t\t</div>\n\t</div>\n\n</div>\n",
             tmplchooser: "<div class=\"{{css}}-chooser-container\">\n\n\t<div class=\"{{css}}-chooser-button-container\">\n\n\t\t<div ba-repeat=\"{{action :: actions}}\">\n\t\t\t<div tabindex=\"0\"\n\t\t\t\t ba-hotkey:space^enter=\"{{click_action(action)}}\" onmouseout=\"this.blur()\"\n\t\t\t\t class=\"{{css}}-chooser-button-{{action.index}}\" ba-click=\"{{click_action(action)}}\"\n\t\t\t>\n\t\t\t\t<input ba-if=\"{{action.select && action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t\t   capture />\n\t\t\t\t<input ba-if=\"{{action.select && !action.capture}}\"\n\t\t\t\t\t   type=\"file\"\n\t\t\t\t\t   class=\"{{css}}-chooser-file\"\n\t\t\t\t\t   onchange=\"{{select_file_action(action, domEvent)}}\"\n\t\t\t\t\t   accept=\"{{action.accept}}\"\n\t\t\t\t/>\n\t\t\t\t<span>\n\t\t\t\t\t{{action.label}}\n\t\t\t\t</span>\n\t\t\t\t<i class=\"{{css}}-icon-{{action.icon}}\" ba-if=\"{{action.icon}}\"></i>\n\t\t\t</div>\n\t\t</div>\n\t</div>\n</div>",
             tmplmessage: "<div data-selector=\"recorder-message-container\" class=\"{{css}}-message-container\" ba-click=\"{{click()}}\">\n    <div class=\"{{css}}-top-inner-message-container {{css}}-{{shortMessage ? 'short-message' : 'long-message'}}\">\n        <div class=\"{{css}}-first-inner-message-container\">\n            <div class=\"{{css}}-second-inner-message-container\">\n                <div class=\"{{css}}-third-inner-message-container\">\n                    <div class=\"{{css}}-fourth-inner-message-container\">\n                        <div data-selector=\"recorder-message-block\" class='{{css}}-message-message'>\n                            <p>\n                                {{message || \"\"}}\n                            </p>\n                            <ul ba-if=\"{{links && links.length > 0}}\" ba-repeat=\"{{link :: links}}\">\n                                <li>\n                                    <a href=\"javascript:;\" ba-click=\"{{linkClick(link)}}\">\n                                        {{link.title}}\n                                    </a>\n                                </li>\n                            </ul>\n                        </div>\n                    </div>\n                </div>\n            </div>\n        </div>\n    </div>\n</div>\n"

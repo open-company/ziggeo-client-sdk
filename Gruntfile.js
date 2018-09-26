@@ -91,6 +91,14 @@ module.exports = function(grunt) {
                     },
                     full: true
                 }, {
+                    src: require.resolve("betajs-media-components/dist/themes/carrot/script.js"),
+                    bindings: {
+                        "browser": "root:BetaJS.Browser",
+                        "dynamics": "root:BetaJS.Dynamics",
+                        "module": "root:BetaJS.MediaComponents"
+                    },
+                    full: true
+                }, {
                     src: require.resolve("betajs-media-components/dist/themes/theatre/script.js"),
                     bindings: {
                         "browser": "root:BetaJS.Browser",
@@ -148,6 +156,7 @@ module.exports = function(grunt) {
         require.resolve("betajs-media-components/dist/themes/cube/style.css"),
         require.resolve("betajs-media-components/dist/themes/elevate/style.css"),
         require.resolve("betajs-media-components/dist/themes/minimalist/style.css"),
+        require.resolve("betajs-media-components/dist/themes/carrot/style.css"),
         require.resolve("betajs-media-components/dist/themes/theatre/style.css"),
         require.resolve("betajs-media-components/dist/themes/space/style.css"),
         "./src/css/*.css"
